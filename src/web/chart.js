@@ -2,7 +2,7 @@
 // right and never rescales horizontally when a new point arrives.
 export const CAPACITY = 300;
 
-const PAD_RIGHT = 46; // room for the axis labels
+const PAD_RIGHT = 70; // room for the widest axis label, "1.95 MB/s"
 const PAD_Y = 6;
 
 function css(name) {

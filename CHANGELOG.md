@@ -13,6 +13,16 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 - argon2id password hashing, in-memory sessions, CSRF tokens, login throttling.
 - `nodos user add` and an append-only JSON audit log.
 
+- Host monitoring for Linux: CPU, memory, load, network rates, storage usage,
+  temperatures. `/api/v1/system`, `/api/v1/history` and a Server-Sent Events
+  stream at `/api/v1/stream`.
+- Dashboard embedded in the binary: sign in, overview with live strip charts,
+  storage and network pages. Light and dark themes.
+- Idle and stalled connections are closed after 15 seconds.
+- Graceful shutdown on SIGINT and SIGTERM (Linux).
+- `-Dstrip` and `-Dfake-host` build options. A stripped Linux release binary is
+  under 0.7 MB.
+
 ### Fixed
 - Server no longer crashes on a body-bearing request without framing headers
   (standard library assertion), it answers 411.

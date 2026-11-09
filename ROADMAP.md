@@ -33,11 +33,11 @@ implemented and tested.
 - [x] Sampler with in-memory history
 - [x] SSE live stream (verified end to end with the synthetic host; real-host run in CI)
 
-## Phase 4: Dashboard
+## Phase 4: Dashboard (in progress)
 
-- [ ] Layout, navigation, login
-- [ ] Overview page with resource graphs
-- [ ] Storage and network pages
+- [x] Layout, navigation, login (embedded in the binary, no build step)
+- [x] Overview page with live strip charts
+- [x] Storage and network pages
 - [ ] Settings
 
 ## Phase 5: Management

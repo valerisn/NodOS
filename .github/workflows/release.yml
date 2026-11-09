@@ -36,7 +36,7 @@ jobs:
         run: |
           mkdir dist
           for target in x86_64-linux-musl aarch64-linux-musl; do
-            zig build -Dtarget=$target -Doptimize=ReleaseSafe --prefix "out/$target"
+            zig build -Dtarget=$target -Doptimize=ReleaseSafe -Dstrip=true --prefix "out/$target"
             tar -C "out/$target/bin" -czf "dist/nodos-${GITHUB_REF_NAME}-$target.tar.gz" nodos
           done
           (cd dist && sha256sum * > SHA256SUMS)
