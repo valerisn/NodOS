@@ -12,6 +12,7 @@ const users_mod = @import("users.zig");
 const ratelimit = @import("ratelimit.zig");
 const audit = @import("audit.zig");
 const assets = @import("assets.zig");
+const docker = @import("integrations/docker.zig");
 const sampler_mod = @import("agent/sampler.zig");
 const encode = @import("agent/encode.zig");
 const version = @import("build_options").version;
@@ -36,6 +37,8 @@ pub const App = struct {
     limiter: ratelimit.Limiter = .{},
     sampler: sampler_mod.Sampler = .{},
     streams: std.atomic.Value(u32) = .init(0),
+    /// Null when the admin set `docker_socket = off`.
+    docker: ?docker.Client = null,
     /// Null in tests.
     audit_log: ?audit.Log = null,
     /// A real hash of a throwaway password, verified against when the
@@ -46,6 +49,9 @@ pub const App = struct {
 
     pub fn init(gpa: std.mem.Allocator, io: Io, cfg: config.Config, users: users_mod.Users) !App {
         var app: App = .{ .gpa = gpa, .cfg = cfg, .users = users };
+        if (!std.mem.eql(u8, cfg.docker_socket, "off")) {
+            app.docker = .{ .io = io, .socket_path = cfg.docker_socket };
+        }
         var pw: [24]u8 = undefined;
         try io.randomSecure(&pw);
         // hashPassword wants printable-length input; raw bytes are fine for argon2.
@@ -61,7 +67,11 @@ pub const App = struct {
     }
 
     fn record(app: *App, io: Io, now_s: i64, actor: []const u8, action: []const u8, ok: bool, ip: []const u8) void {
-        if (app.audit_log) |*a| a.record(io, .{ .ts = now_s, .actor = actor, .action = action, .ok = ok, .ip = ip });
+        app.recordTarget(io, now_s, actor, action, "", ok, ip);
+    }
+
+    fn recordTarget(app: *App, io: Io, now_s: i64, actor: []const u8, action: []const u8, target: []const u8, ok: bool, ip: []const u8) void {
+        if (app.audit_log) |*a| a.record(io, .{ .ts = now_s, .actor = actor, .action = action, .target = target, .ok = ok, .ip = ip });
     }
 };
 
@@ -77,6 +87,8 @@ pub const Reply = struct {
 pub const Ctx = struct {
     method: http.Method,
     path: []const u8,
+    /// Raw query string without the '?', capped at 64 bytes.
+    query: []const u8 = "",
     cookie_token: ?[43]u8 = null,
     csrf: ?[43]u8 = null,
     client: ratelimit.Key,
@@ -144,10 +156,93 @@ pub fn dispatch(app: *App, io: Io, ctx: Ctx, body: []const u8, s: *Scratch) Repl
         app.record(io, ctx.now_s, userName(app, sess), "auth.logout", true, ctx.ip_text);
         return .{ .status = .ok, .body = "{\"ok\":true}", .set_cookie = cookie(app, s, "", 0) };
     }
+    if (std.mem.startsWith(u8, ctx.path, "/api/v1/docker/")) return dockerRoute(app, io, ctx, s);
     if (get) if (assets.find(ctx.path)) |a| {
         return .{ .status = .ok, .content_type = a.content_type, .body = a.body };
     };
     return err_not_found;
+}
+
+const err_docker_off: Reply = .{ .status = .service_unavailable, .body = "{\"error\":\"docker integration is turned off\"}" };
+const err_docker_down: Reply = .{ .status = .service_unavailable, .body = "{\"error\":\"docker is not reachable\"}" };
+const err_docker_odd: Reply = .{ .status = .bad_gateway, .body = "{\"error\":\"docker sent an unexpected reply\"}" };
+
+fn dockerFailure(err: anyerror) Reply {
+    return switch (err) {
+        error.Unavailable => err_docker_down,
+        error.InvalidTarget => err_bad,
+        error.OutOfMemory => err_internal,
+        else => err_docker_odd,
+    };
+}
+
+/// `name=value` out of a query string, as an integer.
+fn queryInt(query: []const u8, name: []const u8) ?usize {
+    var it = std.mem.splitScalar(u8, query, '&');
+    while (it.next()) |pair| {
+        const eq = std.mem.findScalar(u8, pair, '=') orelse continue;
+        if (std.mem.eql(u8, pair[0..eq], name)) return std.fmt.parseInt(usize, pair[eq + 1 ..], 10) catch null;
+    }
+    return null;
+}
+
+/// Everything under /api/v1/docker/. Reading the container list is open to any
+/// signed-in user. Logs can contain secrets and actions change the host, so
+/// both are admin only, and actions also need the CSRF token and an audit line.
+fn dockerRoute(app: *App, io: Io, ctx: Ctx, s: *Scratch) Reply {
+    const sess = currentSession(app, io, ctx) orelse return err_unauth;
+    const client = app.docker orelse return err_docker_off;
+    const rest = ctx.path["/api/v1/docker".len..];
+
+    var arena: std.heap.ArenaAllocator = .init(app.gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    if (std.mem.eql(u8, rest, "/containers")) {
+        if (ctx.method != .GET and ctx.method != .HEAD) return err_method;
+        const list = docker.listContainers(client, a) catch |e| return dockerFailure(e);
+        var w: Io.Writer = .fixed(&s.big);
+        docker.writeContainers(&w, list) catch return err_internal;
+        return .{ .status = .ok, .body = w.buffered() };
+    }
+
+    const prefix = "/containers/";
+    if (!std.mem.startsWith(u8, rest, prefix)) return err_not_found;
+    const tail = rest[prefix.len..];
+    const slash = std.mem.findScalar(u8, tail, '/') orelse return err_not_found;
+    const ref = tail[0..slash];
+    const verb = tail[slash + 1 ..];
+    if (!docker.validRef(ref)) return err_bad;
+
+    if (std.mem.eql(u8, verb, "logs")) {
+        if (ctx.method != .GET) return err_method;
+        if (sess.role != .admin) return err_forbidden;
+        const lines = std.math.clamp(queryInt(ctx.query, "tail") orelse 100, 1, 500);
+        const text = docker.fetchLogs(client, a, ref, lines) catch |e| return dockerFailure(e);
+        var w: Io.Writer = .fixed(&s.big);
+        docker.writeLogs(a, &w, text, lines) catch return err_internal;
+        return .{ .status = .ok, .body = w.buffered() };
+    }
+
+    const action = docker.Action.parse(verb) orelse return err_not_found;
+    if (ctx.method != .POST) return err_method;
+    if (sess.role != .admin) return err_forbidden;
+    if (!csrfOk(sess, ctx)) return err_forbidden;
+
+    var name_buf: [80]u8 = undefined;
+    const action_name = std.fmt.bufPrint(&name_buf, "docker.{s}", .{@tagName(action)}) catch "docker.action";
+    const result = docker.runAction(client, a, ref, action) catch |e| {
+        app.recordTarget(io, ctx.now_s, userName(app, sess), action_name, ref, false, ctx.ip_text);
+        return dockerFailure(e);
+    };
+    const ok = result == .done or result == .unchanged;
+    app.recordTarget(io, ctx.now_s, userName(app, sess), action_name, ref, ok, ctx.ip_text);
+    return switch (result) {
+        .done => .{ .status = .ok, .body = "{\"ok\":true,\"result\":\"done\"}" },
+        .unchanged => .{ .status = .ok, .body = "{\"ok\":true,\"result\":\"unchanged\"}" },
+        .not_found => .{ .status = .not_found, .body = "{\"error\":\"no such container\"}" },
+        .failed => err_docker_odd,
+    };
 }
 
 fn login(app: *App, io: Io, ctx: Ctx, body: []const u8, s: *Scratch) Reply {
@@ -414,9 +509,16 @@ fn serveConnection(io: Io, app: *App, pool: *Pool, slot: *Slot, stream: Io.net.S
         // ctx.path points into the head buffer, which dies when the body
         // reader starts. Copy it before touching the body.
         var path_buf: [128]u8 = undefined;
+        var query_buf: [64]u8 = undefined;
         if (ctx.path.len > path_buf.len) {
             respondSimple(&req, .{ .status = .uri_too_long, .body = "{\"error\":\"uri too long\"}" }, false) catch return;
             return;
+        }
+        if (std.mem.findScalar(u8, head.target, '?')) |q| {
+            const qs = head.target[q + 1 ..];
+            const n = @min(qs.len, query_buf.len);
+            @memcpy(query_buf[0..n], qs[0..n]);
+            ctx.query = query_buf[0..n];
         }
         @memcpy(path_buf[0..ctx.path.len], ctx.path);
         ctx.path = path_buf[0..ctx.path.len];
@@ -726,6 +828,77 @@ test "stream tick emits a snapshot once, then pings" {
     out.clearRetainingCapacity();
     try streamTick(&app, io, &out.writer, &last);
     try std.testing.expectEqualStrings(": ping\n\n", out.written());
+}
+
+test "docker routes enforce auth, role, csrf and validation before touching docker" {
+    const io = std.testing.io;
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var app = try testApp(arena.allocator());
+    defer app.deinit(io);
+    // Points at nothing. Any request that gets past the checks below would
+    // fail with 503, which is how these tests prove the checks ran first.
+    app.docker = .{ .io = io, .socket_path = if (@import("builtin").os.tag == .windows) "C:\\Windows\\Temp\\nodos-none.sock" else "/tmp/nodos-none.sock" };
+    var s: Scratch = .{};
+
+    // anonymous
+    try std.testing.expectEqual(http.Status.unauthorized, dispatch(&app, io, testCtx(.GET, "/api/v1/docker/containers"), "", &s).status);
+    try std.testing.expectEqual(http.Status.unauthorized, dispatch(&app, io, testCtx(.POST, "/api/v1/docker/containers/web/restart"), "", &s).status);
+
+    const viewer = try app.sessions.create(app.gpa, io, 2, .viewer, 1000);
+    const admin = try app.sessions.create(app.gpa, io, 1, .admin, 1000);
+
+    var v = testCtx(.GET, "/api/v1/docker/containers/web/logs");
+    v.cookie_token = viewer.token;
+    // viewers can't read logs or act
+    try std.testing.expectEqual(http.Status.forbidden, dispatch(&app, io, v, "", &s).status);
+    v.method = .POST;
+    v.path = "/api/v1/docker/containers/web/stop";
+    v.csrf = viewer.csrf;
+    try std.testing.expectEqual(http.Status.forbidden, dispatch(&app, io, v, "", &s).status);
+
+    // admin without csrf is refused
+    var ad = testCtx(.POST, "/api/v1/docker/containers/web/restart");
+    ad.cookie_token = admin.token;
+    try std.testing.expectEqual(http.Status.forbidden, dispatch(&app, io, ad, "", &s).status);
+
+    // admin with csrf passes the checks and then hits the unreachable socket
+    ad.csrf = admin.csrf;
+    try std.testing.expectEqual(http.Status.service_unavailable, dispatch(&app, io, ad, "", &s).status);
+
+    // unknown verbs never reach docker, including destructive ones
+    ad.path = "/api/v1/docker/containers/web/kill";
+    try std.testing.expectEqual(http.Status.not_found, dispatch(&app, io, ad, "", &s).status);
+    ad.path = "/api/v1/docker/containers/web/rm";
+    try std.testing.expectEqual(http.Status.not_found, dispatch(&app, io, ad, "", &s).status);
+
+    // hostile container references
+    ad.path = "/api/v1/docker/containers/..%2f..%2fetc/restart";
+    try std.testing.expectEqual(http.Status.bad_request, dispatch(&app, io, ad, "", &s).status);
+    ad.path = "/api/v1/docker/containers/-rf/restart";
+    try std.testing.expectEqual(http.Status.bad_request, dispatch(&app, io, ad, "", &s).status);
+
+    // wrong methods
+    ad.path = "/api/v1/docker/containers/web/restart";
+    ad.method = .GET;
+    try std.testing.expectEqual(http.Status.method_not_allowed, dispatch(&app, io, ad, "", &s).status);
+
+    // viewers may list; here that reaches the dead socket
+    var vl = testCtx(.GET, "/api/v1/docker/containers");
+    vl.cookie_token = viewer.token;
+    try std.testing.expectEqual(http.Status.service_unavailable, dispatch(&app, io, vl, "", &s).status);
+
+    // integration off
+    app.docker = null;
+    try std.testing.expectEqualStrings("{\"error\":\"docker integration is turned off\"}", dispatch(&app, io, vl, "", &s).body);
+}
+
+test "query integer parsing" {
+    try std.testing.expectEqual(@as(?usize, 50), queryInt("tail=50", "tail"));
+    try std.testing.expectEqual(@as(?usize, 7), queryInt("a=1&tail=7", "tail"));
+    try std.testing.expectEqual(@as(?usize, null), queryInt("tail=abc", "tail"));
+    try std.testing.expectEqual(@as(?usize, null), queryInt("other=1", "tail"));
+    try std.testing.expectEqual(@as(?usize, null), queryInt("", "tail"));
 }
 
 test "lockout after repeated failures" {

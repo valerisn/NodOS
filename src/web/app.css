@@ -116,7 +116,7 @@ button.quiet:hover { color: var(--text); border-color: var(--muted); }
   padding: 14px var(--gutter);
   border-bottom: 1px solid var(--rule);
 }
-.nav { display: flex; gap: 4px; flex: 1; }
+.nav { display: flex; flex-wrap: wrap; gap: 4px; flex: 1; }
 .nav a {
   padding: 5px 12px;
   color: var(--muted);
@@ -211,6 +211,38 @@ th.num, td.num { text-align: right; padding-right: 0; padding-left: 14px; }
 .usage { min-width: 180px; }
 .usage .bar { margin-top: 6px; }
 .empty { color: var(--muted); padding: 28px 0; }
+
+/* ---- docker ---- */
+.state::before {
+  content: "";
+  display: inline-block;
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  margin-right: 8px;
+  background: var(--muted);
+}
+.state[data-level="ok"]::before { background: var(--ok); }
+.state[data-level="warn"]::before { background: var(--warn); }
+.state[data-level="idle"] { color: var(--muted); }
+td.actions { white-space: nowrap; }
+td.actions button { margin-left: 6px; }
+.flash { margin: 0 0 14px; padding: 8px 12px; border-left: 3px solid var(--ok); background: var(--bg-raise); font-size: 14px; }
+.flash[data-bad="1"] { border-left-color: var(--crit); }
+.block-head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.block-head h2 { margin: 0; }
+.block-head .spacer { flex: 1; }
+.logs {
+  margin: 0 0 20px;
+  padding: 12px 14px;
+  max-height: 340px;
+  overflow: auto;
+  background: var(--bg-raise);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  font: 12.5px/1.55 ui-monospace, "Cascadia Mono", "SF Mono", Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 
 .boot-note { padding: var(--gutter); }
 

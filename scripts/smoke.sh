@@ -9,8 +9,10 @@ BIN="${1:-zig-out/bin/nodos}"
 PORT="${SMOKE_PORT:-18099}"
 DIR="$(mktemp -d)"
 SERVER_PID=""
+FAKE_PID=""
 cleanup() {
     [ -n "$SERVER_PID" ] && kill -9 "$SERVER_PID" 2>/dev/null || true
+    [ -n "$FAKE_PID" ] && kill -9 "$FAKE_PID" 2>/dev/null || true
     rm -rf "$DIR"
 }
 trap cleanup EXIT
@@ -25,7 +27,17 @@ port = $PORT
 data_dir = $NATIVE_DIR/data
 secure_cookies = false
 log_level = debug
+docker_socket = $NATIVE_DIR/docker.sock
 EOF
+
+# A fake Docker daemon, so the Docker routes are tested end to end on Linux.
+FAKE_PID=""
+if [ -z "${SMOKE_SKIP_POSIX:-}" ]; then
+    python3 "$(dirname "$0")/fake_docker.py" "$DIR/docker.sock" "$DIR/docker-requests.log" &
+    FAKE_PID=$!
+    for _ in $(seq 1 50); do [ -S "$DIR/docker.sock" ] && break; sleep 0.1; done
+    [ -S "$DIR/docker.sock" ] || { echo "FAIL: fake docker did not start" >&2; exit 1; }
+fi
 
 printf '%s\n' 'smoke test passphrase' | "$BIN" user add smoke --config "$DIR/nodos.conf" >/dev/null
 # SMOKE_SKIP_POSIX=1 lets a developer run the HTTP half of this on Windows.
@@ -83,6 +95,27 @@ if [ -z "${SMOKE_SKIP_POSIX:-}" ]; then
     fi
 fi
 [ "$(status "$URL/stream")" = "401" ] || fail "stream without cookie should be 401"
+
+if [ -z "${SMOKE_SKIP_POSIX:-}" ]; then
+    AUTH=(-H "Cookie: nodos_session=$TOKEN")
+    [ "$(status "$URL/docker/containers")" = "401" ] || fail "docker list without cookie should be 401"
+    LIST="$(curl -s "${AUTH[@]}" "$URL/docker/containers")"
+    echo "$LIST" | grep -q '"name":"web"' || fail "docker list missing web: $LIST"
+    echo "$LIST" | grep -q '"total":2' || fail "docker list total: $LIST"
+    curl -s "${AUTH[@]}" "$URL/docker/containers/web/logs?tail=5" | grep -q 'listening on :8080' || fail "docker logs"
+
+    # state change needs csrf, and a verb outside the allowed three never reaches docker
+    [ "$(status -X POST -d '' "${AUTH[@]}" "$URL/docker/containers/web/restart")" = "403" ] || fail "docker restart without csrf"
+    [ "$(status -X POST -d '' "${AUTH[@]}" -H "x-csrf-token: $CSRF" "$URL/docker/containers/web/restart")" = "200" ] || fail "docker restart"
+    [ "$(status -X POST -d '' "${AUTH[@]}" -H "x-csrf-token: $CSRF" "$URL/docker/containers/web/kill")" = "404" ] || fail "docker kill must be 404"
+    [ "$(status -X POST -d '' "${AUTH[@]}" -H "x-csrf-token: $CSRF" "$URL/docker/containers/nope/restart")" = "404" ] || fail "docker unknown container"
+    [ "$(status -X POST -d '' "${AUTH[@]}" -H "x-csrf-token: $CSRF" "$URL/docker/containers/-rf/restart")" = "400" ] || fail "docker bad ref"
+
+    grep -q 'POST /containers/web/restart' "$DIR/docker-requests.log" || fail "restart never reached docker"
+    # the dangerous things must never have been sent
+    if grep -Eq 'kill|DELETE|/rm|exec|-rf' "$DIR/docker-requests.log"; then fail "unexpected request reached docker: $(cat "$DIR/docker-requests.log")"; fi
+    grep -q '"action":"docker.restart","target":"web","ok":true' "$DIR/data/audit.log" || fail "docker restart not audited"
+fi
 
 [ "$(status -X POST -d '' -H "Cookie: nodos_session=$TOKEN" "$URL/logout")" = "403" ] || fail "logout without csrf"
 [ "$(status -X POST -d '' -H "Cookie: nodos_session=$TOKEN" -H "x-csrf-token: $CSRF" "$URL/logout")" = "200" ] || fail "logout"

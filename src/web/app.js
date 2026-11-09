@@ -7,6 +7,7 @@ const $ = (id) => document.getElementById(id);
 
 // Rolling history for the charts, seeded from /history then extended by the stream.
 const hist = { cpu: [], mem: [], rx: [], tx: [] };
+let role = "viewer";
 let latest = null;
 let lastTs = 0;
 let current = null; // { name, view }
@@ -17,6 +18,8 @@ let retryTimer = null;
 
 function showLogin() {
   stopStream();
+  if (current && current.view.deactivate) current.view.deactivate();
+  current = null;
   setCsrf("");
   $("app").hidden = true;
   $("login").hidden = false;
@@ -28,6 +31,7 @@ function showApp(me) {
   $("login").hidden = true;
   $("app").hidden = false;
   $("whoami").textContent = me.username;
+  role = me.role;
   setCsrf(me.csrf);
   route();
   startStream();
@@ -58,9 +62,11 @@ function route() {
     else a.removeAttribute("aria-current");
   }
   if (current && current.name === name) return;
-  const view = views[name]();
+  if (current && current.view.deactivate) current.view.deactivate();
+  const view = views[name]({ role });
   $("view").replaceChildren(view.el);
   current = { name, view };
+  if (view.activate) view.activate();
   if (latest) view.update(latest, hist);
 }
 

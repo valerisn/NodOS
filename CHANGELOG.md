@@ -18,6 +18,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   stream at `/api/v1/stream`.
 - Dashboard embedded in the binary: sign in, overview with live strip charts,
   storage and network pages. Light and dark themes.
+- Docker: container list, logs, start, stop and restart, admin-gated, CSRF-protected and audited.
 - Idle and stalled connections are closed after 15 seconds.
 - Graceful shutdown on SIGINT and SIGTERM (Linux).
 - `-Dstrip` and `-Dfake-host` build options. A stripped Linux release binary is

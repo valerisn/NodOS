@@ -1,3 +1,4 @@
+import { get, post } from "./api.js";
 import { StripChart } from "./chart.js";
 import { bytes, bytesText, duration, level, percent, rate, rateText } from "./format.js";
 
@@ -187,4 +188,146 @@ export function networkView() {
   };
 }
 
-export const views = { overview: overviewView, storage: storageView, network: networkView };
+// ---------------------------------------------------------------- docker
+
+const DOCKER_HINTS = {
+  "docker is not reachable": "NodOS cannot reach Docker. Check that the socket exists and that the user running NodOS can read it.",
+  "docker integration is turned off": "Docker is turned off in the NodOS config (docker_socket = off).",
+};
+
+function stateLevel(state) {
+  if (state === "running") return "ok";
+  if (state === "exited" || state === "created") return "idle";
+  return "warn"; // restarting, paused, dead, removing
+}
+
+export function dockerView({ role }) {
+  const admin = role === "admin";
+  const body = h("tbody");
+  const message = h("p", { class: "muted", role: "status" });
+  const flash = h("p", { class: "flash", role: "status", hidden: true });
+  const table = h(
+    "table",
+    { hidden: true },
+    h("thead", {}, h("tr", {}, h("th", {}, "Container"), h("th", {}, "State"), h("th", {}, "Status"), h("th", { class: "num" }, admin ? "Actions" : ""))),
+    body,
+  );
+  const logTitle = h("h2", {});
+  const logPre = h("pre", { class: "logs", tabindex: "0" });
+  const logClose = h("button", { type: "button", class: "quiet" }, "Close");
+  const logRefresh = h("button", { type: "button", class: "quiet" }, "Refresh");
+  const logBlock = h("section", { class: "block", hidden: true }, h("div", { class: "block-head" }, logTitle, h("span", { class: "spacer" }), logRefresh, logClose), logPre);
+
+  let timer = null;
+  let busy = false;
+  let logRef = null;
+  let alive = true;
+
+  function say(text, bad) {
+    flash.hidden = !text;
+    flash.textContent = text || "";
+    flash.dataset.bad = bad ? "1" : "";
+  }
+
+  function explain(err) {
+    return DOCKER_HINTS[err.message] || err.message;
+  }
+
+  async function load() {
+    try {
+      const d = await get("/docker/containers");
+      if (!alive) return;
+      message.textContent = d.containers.length === 0 ? "No containers yet." : d.total > d.containers.length ? `Showing ${d.containers.length} of ${d.total} containers.` : "";
+      table.hidden = d.containers.length === 0;
+      body.replaceChildren(...d.containers.map(row));
+    } catch (err) {
+      if (!alive) return;
+      table.hidden = true;
+      body.replaceChildren();
+      message.textContent = err.status === 401 ? "Your session ended. Sign in again." : explain(err);
+    }
+  }
+
+  function button(label, onClick, disabled) {
+    const b = h("button", { type: "button", class: "quiet", disabled: disabled ? true : false }, label);
+    b.addEventListener("click", onClick);
+    return b;
+  }
+
+  function row(c) {
+    const running = c.state === "running";
+    const actions = h("td", { class: "num actions" });
+    if (admin) {
+      // append(null) would print the word "null", so only pass real nodes.
+      actions.append(
+        ...[
+          button("Logs", () => openLogs(c)),
+          running ? button("Restart", () => act(c, "restart")) : button("Start", () => act(c, "start")),
+          running ? button("Stop", () => act(c, "stop")) : undefined,
+        ].filter(Boolean),
+      );
+    }
+    const dot = h("span", { class: "state", "data-level": stateLevel(c.state) }, c.state);
+    return h("tr", {}, h("td", {}, h("div", { class: "mount-name" }, c.name || c.id), h("div", { class: "mount-dev" }, `${c.image}, ${c.id}`)), h("td", {}, dot), h("td", {}, c.status), actions);
+  }
+
+  async function act(c, verb) {
+    if (busy) return;
+    if (verb !== "start" && !confirm(`${verb === "stop" ? "Stop" : "Restart"} ${c.name || c.id}?`)) return;
+    busy = true;
+    say(`${verb === "stop" ? "Stopping" : verb === "restart" ? "Restarting" : "Starting"} ${c.name}...`);
+    try {
+      const r = await post(`/docker/containers/${encodeURIComponent(c.id)}/${verb}`);
+      const past = { start: "started", stop: "stopped", restart: "restarted" }[verb];
+      say(r.result === "unchanged" ? `${c.name} was already ${past === "stopped" ? "stopped" : "running"}.` : `${c.name} ${past}.`);
+    } catch (err) {
+      say(`Could not ${verb} ${c.name}: ${explain(err)}`, true);
+    } finally {
+      busy = false;
+      await load();
+    }
+  }
+
+  async function loadLogs() {
+    if (!logRef) return;
+    try {
+      const d = await get(`/docker/containers/${encodeURIComponent(logRef.id)}/logs?tail=200`);
+      logPre.textContent = d.lines.length ? d.lines.join("\n") : "No log output.";
+      if (d.truncated) logPre.append("\n[older lines cut to fit]");
+      logPre.scrollTop = logPre.scrollHeight;
+    } catch (err) {
+      logPre.textContent = "Could not read logs: " + explain(err);
+    }
+  }
+
+  function openLogs(c) {
+    logRef = c;
+    logTitle.textContent = `Logs: ${c.name || c.id}`;
+    logPre.textContent = "Loading...";
+    logBlock.hidden = false;
+    loadLogs();
+  }
+  logRefresh.addEventListener("click", loadLogs);
+  logClose.addEventListener("click", () => {
+    logRef = null;
+    logBlock.hidden = true;
+  });
+
+  const el = h("div", {}, flash, message, table, logBlock);
+  return {
+    el,
+    activate() {
+      alive = true;
+      load();
+      timer = setInterval(load, 5000);
+    },
+    deactivate() {
+      alive = false;
+      clearInterval(timer);
+    },
+    // The container list is polled, not streamed.
+    update() {},
+  };
+}
+
+export const views = { overview: overviewView, storage: storageView, network: networkView, docker: dockerView };

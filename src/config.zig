@@ -14,6 +14,9 @@ pub const Config = struct {
     /// Browsers drop Secure cookies on plain HTTP (localhost excepted). Turn
     /// this off only for a trusted-LAN setup without TLS.
     secure_cookies: bool = true,
+    /// Docker Engine socket, or "off". Socket access is root-equivalent, so
+    /// an admin who doesn't want NodOS to hold that power can switch it off.
+    docker_socket: []const u8 = "/var/run/docker.sock",
     /// How often the sampler runs. Below 500 ms the CPU cost stops being funny.
     sample_interval_ms: u32 = 2000,
 };
@@ -55,6 +58,8 @@ pub fn parse(arena: std.mem.Allocator, text: []const u8, diag: *Diagnostic) Pars
         } else if (std.mem.eql(u8, key, "log_level")) {
             cfg.log_level = std.meta.stringToEnum(LogLevel, value) orelse
                 return fail(diag, line_no, "log_level must be err, warn, info or debug");
+        } else if (std.mem.eql(u8, key, "docker_socket")) {
+            cfg.docker_socket = try arena.dupe(u8, value);
         } else if (std.mem.eql(u8, key, "secure_cookies")) {
             if (std.mem.eql(u8, value, "true")) {
                 cfg.secure_cookies = true;
@@ -98,9 +103,11 @@ test "parses all keys" {
         \\log_level = debug
         \\sample_interval_ms = 1000
         \\secure_cookies = false
+        \\docker_socket = off
         \\
     , &d);
     try std.testing.expect(!cfg.secure_cookies);
+    try std.testing.expectEqualStrings("off", cfg.docker_socket);
     try std.testing.expectEqualStrings("0.0.0.0", cfg.listen);
     try std.testing.expectEqual(@as(u16, 9000), cfg.port);
     try std.testing.expectEqualStrings("/tmp/nodos", cfg.data_dir);

@@ -40,9 +40,9 @@ implemented and tested.
 - [x] Storage and network pages
 - [ ] Settings
 
-## Phase 5: Management
+## Phase 5: Management (in progress)
 
-- [ ] Docker: list, start, stop, restart, logs, stats
+- [x] Docker: list, start, stop, restart, logs (stats still to do). Verified against a fake daemon on a real socket; real-daemon run is the smoke test in CI
 - [ ] systemd services: status, start, stop, logs
 - [ ] Notifications and thresholds
 - [ ] Audit log viewer

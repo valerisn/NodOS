@@ -12,6 +12,9 @@ pub const users = @import("users.zig");
 pub const assets = @import("assets.zig");
 pub const ratelimit = @import("ratelimit.zig");
 pub const audit = @import("audit.zig");
+pub const integrations = struct {
+    pub const docker = @import("integrations/docker.zig");
+};
 pub const agent = struct {
     pub const proc = @import("agent/proc.zig");
     pub const collect = @import("agent/collect.zig");
@@ -24,6 +27,7 @@ test {
     // refAllDecls stops at the first level, and a silent zero-test module is
     // exactly how parsers rot.
     std.testing.refAllDecls(agent);
+    std.testing.refAllDecls(integrations);
 }
 
 test "version is not empty" {

@@ -99,6 +99,35 @@ disconnects, the session expires or is logged out, or the server stops. At most
 16 streams run at once; more get 503. Browsers reconnect automatically with
 `EventSource`, which sends the session cookie, so no token handling is needed.
 
+### Docker
+
+Talks to the Docker Engine over its Unix socket (`docker_socket` in the
+config). Access to that socket is root-equivalent on the host, so these routes
+are the most tightly gated in NodOS.
+
+| Route | Who | Notes |
+| --- | --- | --- |
+| `GET /api/v1/docker/containers` | any signed-in user | `{"total","containers":[{id,name,image,state,status,created}]}`. First 64 containers; compare `total` |
+| `GET /api/v1/docker/containers/{ref}/logs?tail=N` | admin | `{"lines":[...],"truncated"}`. `tail` is 1 to 500, default 100 |
+| `POST /api/v1/docker/containers/{ref}/start` | admin, CSRF | |
+| `POST /api/v1/docker/containers/{ref}/stop` | admin, CSRF | 10 second grace period |
+| `POST /api/v1/docker/containers/{ref}/restart` | admin, CSRF | 10 second grace period |
+
+`{ref}` is a container id or name: 1 to 64 characters of letters, digits, `_`,
+`.` and `-`, starting with a letter or digit. Anything else is a 400. Only the
+three verbs above exist; `kill`, `rm`, `exec` and the rest answer 404 and never
+reach Docker. There is no endpoint that takes a command.
+
+Actions answer `{"ok":true,"result":"done"}` or `"unchanged"` (already in that
+state). Every action is written to the audit log with the container as target.
+
+| Status | Meaning |
+| --- | --- |
+| 403 | Not an admin, or CSRF token missing or wrong |
+| 404 | No such container, or not a supported verb |
+| 502 | Docker answered with something unexpected |
+| 503 | Docker is turned off in the config, or the socket is not reachable |
+
 ## Errors
 
 Errors are `{"error": "message"}` with a matching HTTP status. A `POST` with no
