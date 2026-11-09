@@ -8,9 +8,11 @@ const usage =
     \\Usage: nodos <command>
     \\
     \\Commands:
-    \\  serve [--config PATH]   Run the server
-    \\  version                 Print version and exit
-    \\  help                    Show this message
+    \\  serve [--config PATH]                          Run the server
+    \\  user add NAME [--role admin|viewer] [--config PATH]
+    \\                                                 Create a user, password read from stdin
+    \\  version                                        Print version and exit
+    \\  help                                           Show this message
     \\
 ;
 
@@ -49,16 +51,79 @@ pub fn main(init: std.process.Init) !void {
     switch (cmd.command) {
         .help => try w.writeAll(usage),
         .version => try w.print("nodos {s}\n", .{nodos.version}),
-        .serve => {
-            const cfg = loadConfig(init.io, arena, cmd.config_path);
-            runtime_level.store(@backingInt(toLogLevel(cfg.log_level)), .monotonic);
-            nodos.server.run(init.io, cfg) catch |err| {
-                std.log.err("server stopped: {s}", .{@errorName(err)});
-                std.process.exit(1);
-            };
-        },
+        .serve => try serve(init, cmd),
+        .user_add => try userAdd(init, cmd, w),
     }
     try w.flush();
+}
+
+fn fatal(comptime fmt: []const u8, args: anytype) noreturn {
+    std.debug.print("nodos: " ++ fmt ++ "\n", args);
+    std.process.exit(1);
+}
+
+fn serve(init: std.process.Init, cmd: nodos.cli.Parsed) !void {
+    const io = init.io;
+    const arena = init.arena.allocator();
+    const cfg = loadConfig(io, arena, cmd.config_path);
+    runtime_level.store(@backingInt(toLogLevel(cfg.log_level)), .monotonic);
+
+    var dir = openDataDir(io, cfg.data_dir);
+    defer dir.close(io);
+
+    const users = nodos.users.load(io, arena, dir) catch |err|
+        fatal("cannot load users: {s}", .{@errorName(err)});
+
+    var app = nodos.server.App.init(init.gpa, io, cfg, users) catch |err|
+        fatal("startup failed: {s}", .{@errorName(err)});
+    defer app.deinit(io);
+    app.audit_log = nodos.audit.Log.open(io, dir) catch |err|
+        fatal("cannot open audit log: {s}", .{@errorName(err)});
+
+    nodos.server.run(io, &app) catch |err| {
+        std.log.err("server stopped: {s}", .{@errorName(err)});
+        std.process.exit(1);
+    };
+}
+
+fn userAdd(init: std.process.Init, cmd: nodos.cli.Parsed, w: *Io.Writer) !void {
+    const io = init.io;
+    const arena = init.arena.allocator();
+    const cfg = loadConfig(io, arena, cmd.config_path);
+    var dir = openDataDir(io, cfg.data_dir);
+    defer dir.close(io);
+
+    var users = nodos.users.load(io, arena, dir) catch |err|
+        fatal("cannot load users: {s}", .{@errorName(err)});
+
+    // Password comes from stdin, never argv: argv shows up in `ps` and shell history.
+    var in_buf: [512]u8 = undefined;
+    var stdin: Io.File.Reader = .init(.stdin(), io, &in_buf);
+    const line = (stdin.interface.takeDelimiter('\n') catch fatal("cannot read password", .{})) orelse
+        fatal("no password on stdin", .{});
+    const password = std.mem.trimEnd(u8, line, "\r");
+
+    var hash_buf: [nodos.auth.hash_buf_len]u8 = undefined;
+    const phc = nodos.auth.hashPassword(init.gpa, io, password, &hash_buf) catch |err| switch (err) {
+        error.PasswordTooShort => fatal("password must be at least {d} characters", .{nodos.auth.min_password_len}),
+        error.PasswordTooLong => fatal("password must be at most {d} characters", .{nodos.auth.max_password_len}),
+        else => fatal("hashing failed: {s}", .{@errorName(err)}),
+    };
+
+    const user = users.add(arena, cmd.user_name.?, cmd.role, phc) catch |err| switch (err) {
+        error.InvalidName => fatal("name must be 1-32 chars of a-z, 0-9, '-' or '_'", .{}),
+        error.DuplicateName => fatal("user '{s}' already exists", .{cmd.user_name.?}),
+        else => fatal("cannot add user: {s}", .{@errorName(err)}),
+    };
+    nodos.users.save(io, dir, &users) catch |err| fatal("cannot save users: {s}", .{@errorName(err)});
+    try w.print("created {s} user '{s}'\n", .{ @tagName(user.role), user.name });
+}
+
+fn openDataDir(io: Io, path: []const u8) Io.Dir {
+    Io.Dir.cwd().createDirPath(io, path) catch |err|
+        fatal("cannot create data_dir {s}: {s}", .{ path, @errorName(err) });
+    return Io.Dir.cwd().openDir(io, path, .{}) catch |err|
+        fatal("cannot open data_dir {s}: {s}", .{ path, @errorName(err) });
 }
 
 fn toLogLevel(l: nodos.config.LogLevel) std.log.Level {
@@ -74,20 +139,12 @@ fn toLogLevel(l: nodos.config.LogLevel) std.log.Level {
 /// worse than not starting.
 fn loadConfig(io: Io, arena: std.mem.Allocator, path: ?[]const u8) nodos.config.Config {
     const p = path orelse return .{};
-    const text = Io.Dir.cwd().readFileAlloc(io, p, arena, .limited(64 * 1024)) catch |err| {
-        std.debug.print("nodos: cannot read {s}: {s}\n", .{ p, @errorName(err) });
-        std.process.exit(1);
-    };
+    const text = Io.Dir.cwd().readFileAlloc(io, p, arena, .limited(64 * 1024)) catch |err|
+        fatal("cannot read {s}: {s}", .{ p, @errorName(err) });
     var diag: nodos.config.Diagnostic = .{};
     return nodos.config.parse(arena, text, &diag) catch |err| switch (err) {
-        error.InvalidConfig => {
-            std.debug.print("nodos: {s}:{d}: {s}\n", .{ p, diag.line, diag.message });
-            std.process.exit(1);
-        },
-        error.OutOfMemory => {
-            std.debug.print("nodos: out of memory\n", .{});
-            std.process.exit(1);
-        },
+        error.InvalidConfig => fatal("{s}:{d}: {s}", .{ p, diag.line, diag.message }),
+        error.OutOfMemory => fatal("out of memory", .{}),
     };
 }
 
