@@ -2,8 +2,10 @@
 //! per connection. Request handling is `dispatch`, a function of plain values,
 //! so the auth flow is testable without opening a socket.
 const std = @import("std");
+const builtin = @import("builtin");
 const Io = std.Io;
 const http = std.http;
+const signals = @import("signals.zig");
 const config = @import("config.zig");
 const auth = @import("auth.zig");
 const users_mod = @import("users.zig");
@@ -299,6 +301,7 @@ pub fn run(io: Io, app: *App) !void {
     var listener = try addr.listen(io, .{ .reuse_address = true });
     defer listener.deinit(io);
     log.info("listening on {s}:{d}", .{ app.cfg.listen, app.cfg.port });
+    if (builtin.os.tag == .linux) _ = signals.installShutdown(listener.socket.handle);
     if (app.users.list.items.len == 0) {
         log.warn("no users exist, create one with: nodos user add <name> --config <file>", .{});
     }
@@ -314,7 +317,10 @@ pub fn run(io: Io, app: *App) !void {
 
     while (true) {
         const stream = listener.accept(io) catch |err| switch (err) {
-            error.Canceled => return,
+            error.Canceled, error.SocketNotListening => {
+                log.info("shutting down", .{});
+                return;
+            },
             else => {
                 log.warn("accept failed: {s}", .{@errorName(err)});
                 continue;
