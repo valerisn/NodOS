@@ -1,0 +1,11 @@
+// Lets the "nodos" user start, stop and restart specific systemd units.
+// Copy to /etc/polkit-1/rules.d/50-nodos.rules and edit the list. List only
+// the units you also put in `services =` in nodos.conf and really want
+// controllable from the dashboard.
+polkit.addRule(function(action, subject) {
+    if (action.id == "org.freedesktop.systemd1.manage-units" &&
+        subject.user == "nodos" &&
+        ["nginx.service", "postgresql.service"].indexOf(action.lookup("unit")) >= 0) {
+        return polkit.Result.YES;
+    }
+});

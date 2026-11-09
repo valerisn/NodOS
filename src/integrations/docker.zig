@@ -18,10 +18,15 @@ const build_options = @import("build_options");
 pub const Client = struct {
     io: Io,
     socket_path: []const u8,
+    /// A wedged daemon must not wedge us. Without a deadline each dashboard
+    /// poll against a hung dockerd would pin a connection slot forever.
+    timeout_ms: u32 = 8000,
 
     pub const Error = error{
         /// Socket missing, refused, or permission denied.
         Unavailable,
+        /// Connected, but no complete answer inside `timeout_ms`.
+        TimedOut,
         BadResponse,
         ResponseTooLarge,
         InvalidTarget,
@@ -47,6 +52,36 @@ pub const Client = struct {
             if (std.mem.eql(u8, c.socket_path, "fake")) return fake.respond(arena, method, target);
         }
 
+        // Race the exchange against a timer; whichever finishes first wins and
+        // the other is cancelled (which interrupts a blocked read).
+        const Race = union(enum) {
+            reply: Error!Response,
+            timer: Io.Cancelable!void,
+        };
+        var slots: [2]Race = undefined;
+        var sel: Io.Select(Race) = .init(c.io, &slots);
+        sel.concurrent(.reply, exchange, .{ c, arena, method, target, max_body }) catch return error.Unavailable;
+        sel.concurrent(.timer, sleepMs, .{ c.io, c.timeout_ms }) catch {
+            sel.cancelDiscard();
+            return error.Unavailable;
+        };
+        const first = sel.await() catch {
+            sel.cancelDiscard();
+            return error.Unavailable;
+        };
+        // Stop the loser and wait for it, so nothing touches the arena after we return.
+        sel.cancelDiscard();
+        return switch (first) {
+            .reply => |r| r,
+            .timer => error.TimedOut,
+        };
+    }
+
+    fn sleepMs(io: Io, ms: u32) Io.Cancelable!void {
+        try io.sleep(.fromMilliseconds(ms), .awake);
+    }
+
+    fn exchange(c: Client, arena: Allocator, method: []const u8, target: []const u8, max_body: usize) Error!Response {
         const addr = Io.net.UnixAddress.init(c.socket_path) catch return error.Unavailable;
         const stream = addr.connect(c.io) catch return error.Unavailable;
         defer stream.close(c.io);
@@ -564,6 +599,45 @@ test "client talks to a fake daemon over a unix socket" {
     try std.testing.expect(ok);
     try std.testing.expectEqual(@as(usize, 2), list.items.len);
     try std.testing.expectEqualStrings("web", list.items[0].name);
+}
+
+// A daemon that takes the connection and then says nothing, like a wedged dockerd.
+fn silentDaemon(io: Io, server: *Io.net.Server) Io.Cancelable!void {
+    const stream = server.accept(io) catch return;
+    defer stream.close(io);
+    var rbuf: [512]u8 = undefined;
+    var r = stream.reader(io, &rbuf);
+    // Read the request, then hold the connection open without answering.
+    _ = r.interface.takeDelimiter('\n') catch return;
+    try io.sleep(.fromSeconds(30), .awake);
+}
+
+test "a daemon that never answers times out instead of hanging" {
+    const io = std.testing.io;
+    var path_buf: [96]u8 = undefined;
+    var nonce_bytes: [4]u8 = undefined;
+    io.random(&nonce_bytes);
+    const nonce = std.mem.readInt(u32, &nonce_bytes, .little);
+    const sock_path = try std.fmt.bufPrint(&path_buf, "{s}nodos-silent-{x}.sock", .{ if (@import("builtin").os.tag == .windows) "C:\\Windows\\Temp\\" else "/tmp/", nonce });
+    const addr = try Io.net.UnixAddress.init(sock_path);
+    var server = addr.listen(io, .{}) catch |err| switch (err) {
+        error.AddressFamilyUnsupported, error.AccessDenied, error.PermissionDenied, error.FileNotFound => return error.SkipZigTest,
+        else => return err,
+    };
+    defer server.deinit(io);
+    defer Io.Dir.cwd().deleteFile(io, sock_path) catch {};
+
+    var fut = io.async(silentDaemon, .{ io, &server });
+    defer fut.cancel(io) catch {};
+
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const client: Client = .{ .io = io, .socket_path = sock_path, .timeout_ms = 300 };
+    const started = Io.Timestamp.now(io, .awake);
+    try std.testing.expectError(error.TimedOut, client.request(arena.allocator(), "GET", "/containers/json", 1024));
+    const took_ms = started.durationTo(Io.Timestamp.now(io, .awake)).toMilliseconds();
+    // generous upper bound: the point is "about a third of a second", not 30 s
+    try std.testing.expect(took_ms < 5000);
 }
 
 test "client reports unavailable when the socket does not exist" {

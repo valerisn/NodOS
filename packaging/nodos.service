@@ -1,0 +1,46 @@
+[Unit]
+Description=NodOS home server management
+Documentation=https://github.com/valerisn/NodOS
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nodos
+Group=nodos
+ExecStart=/usr/local/bin/nodos serve --config /etc/nodos/nodos.conf
+Restart=on-failure
+RestartSec=3
+
+# Docker and journal access are opt-in. Docker socket access is root-equivalent,
+# so don't add that group unless you want the Docker page:
+#   sudo systemctl edit nodos
+#   [Service]
+#   SupplementaryGroups=docker systemd-journal
+
+# Hardening. NodOS needs to read /proc and /sys, talk to a couple of sockets,
+# and write its own data directory. Nothing else.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/nodos
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

@@ -17,6 +17,7 @@ line number.
 | `data_dir` | `/var/lib/nodos` | Holds `users.db` and `audit.log`. Created if missing |
 | `log_level` | `info` | `err`, `warn`, `info` or `debug`. Logs go to stderr |
 | `secure_cookies` | `true` | Mark session cookies `Secure`. Set `false` only for plain-HTTP LANs |
+| `trusted_proxy` | empty | IP of a reverse proxy whose `X-Forwarded-For` header is believed (rightmost entry). Empty ignores the header |
 | `services` | empty | Comma separated systemd units NodOS may show and control, without `.service`. Empty turns the feature off |
 | `docker_socket` | `/var/run/docker.sock` | Docker Engine socket, or `off`. See the warning below |
 | `sample_interval_ms` | `2000` | Metrics sampling interval, 500 to 60000. Unused until Phase 3 |

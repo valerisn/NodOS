@@ -22,8 +22,8 @@ implemented and tested.
 - [x] Audit log for logins and logouts
 - [x] Idle connection reaper (slowloris), verified with stalled sockets
 - [ ] Graceful shutdown on SIGINT and SIGTERM (written, compiles for Linux, awaiting first CI smoke run)
-- [ ] TLS decision (built-in or documented reverse proxy)
-- [ ] Trusted proxy setting for client addresses
+- [x] TLS decision: reverse proxy, documented with Caddy and nginx examples (D9)
+- [x] Trusted proxy setting for client addresses (rightmost X-Forwarded-For from a named proxy; tested live)
 - [ ] Fuzz the request path
 
 ## Phase 3: Monitoring (in progress)
@@ -51,7 +51,7 @@ implemented and tested.
 
 - [ ] Security review
 - [ ] Performance measurements recorded against the budget
-- [ ] Install docs tested on a clean machine
+- [x] Install docs, hardened systemd unit and installer; CI installs and starts the service on Ubuntu (not yet tried on a real home server)
 - [ ] Signed release builds, first public release
 
 ## Later

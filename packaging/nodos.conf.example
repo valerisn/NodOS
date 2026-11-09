@@ -1,0 +1,34 @@
+# NodOS configuration. Copy to /etc/nodos/nodos.conf.
+# Format: key = value, one per line. Lines starting with # are comments.
+# Everything here is optional; the values shown are the defaults.
+
+# Where to listen. Loopback means only this machine (or a reverse proxy on it)
+# can connect. Put a TLS-terminating proxy in front rather than binding wide.
+listen = 127.0.0.1
+port = 8080
+
+# Users, sessions and the audit log live here. Created if missing.
+data_dir = /var/lib/nodos
+
+# err, warn, info or debug. Logs go to stderr, so `journalctl -u nodos`.
+log_level = info
+
+# Mark the session cookie Secure. Keep this true when you reach NodOS over
+# HTTPS. Browsers drop Secure cookies on plain http:// (except localhost), so
+# set false only for a trusted LAN without TLS.
+secure_cookies = true
+
+# Behind a reverse proxy on this machine, tell NodOS to believe its
+# X-Forwarded-For header so login throttling and the audit log see real client
+# addresses. Only ever name a proxy you run yourself.
+# trusted_proxy = 127.0.0.1
+
+# systemd units NodOS may show and control (no ".service"). An allowlist.
+# Starting and stopping also needs a polkit rule, see the installation guide.
+# services = ssh, nginx
+
+# Docker Engine socket, or "off". Access to it is root-equivalent on the host.
+# docker_socket = /var/run/docker.sock
+
+# Seconds between samples, in milliseconds. 500 to 60000.
+# sample_interval_ms = 2000

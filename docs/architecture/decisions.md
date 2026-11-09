@@ -85,3 +85,20 @@ also no read timeouts yet (see the TODO in `server.zig`).
   Leaning argon2id with documented parameters.
 - **Storage format**: flat files versus embedded SQLite. See overview.
 - **Privileged action path**: polkit versus helper process. See overview.
+
+## D9. TLS: reverse proxy, not built in
+
+`std.crypto.tls` has no server side in 0.17, and a hand-rolled TLS server is the
+wrong place to spend risk in a security tool. NodOS speaks HTTP on loopback by
+default and the installation guide shows Caddy and nginx in front. Trade-off:
+one more moving part for the admin, in exchange for certificate handling,
+renewal and protocol hygiene done by software that specializes in it. Revisit
+when the standard library gains a maintained server implementation.
+
+## D10. Docker and systemd integrations call out; they never embed a shell
+
+Docker is spoken to over its socket with a minimal HTTP/1.0 client. systemd is
+driven through `systemctl` and `journalctl` with fixed argument vectors and a
+10 second timeout. Both are allowlist-shaped: three verbs each, container
+references validated by character set, systemd units matched against the config.
+Both are admin-only for anything that reads logs or changes state, and audited.

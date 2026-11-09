@@ -18,6 +18,11 @@ pub const Config = struct {
     /// Docker Engine socket, or "off". Socket access is root-equivalent, so
     /// an admin who doesn't want NodOS to hold that power can switch it off.
     docker_socket: []const u8 = "/var/run/docker.sock",
+    /// Address of a reverse proxy whose X-Forwarded-For header we believe.
+    /// Empty (the default) means we trust no one, and the header is ignored.
+    /// Only ever set this to a proxy you run: anyone else can forge the header
+    /// and dodge the login throttle.
+    trusted_proxy: []const u8 = "",
     /// systemd units NodOS may show and control, without ".service". Empty
     /// means the services feature is off. An allowlist, never a pattern.
     services: []const []const u8 = &.{},
@@ -73,6 +78,10 @@ pub fn parse(arena: std.mem.Allocator, text: []const u8, diag: *Diagnostic) Pars
                 try list.append(arena, try arena.dupe(u8, name));
             }
             cfg.services = list.items;
+        } else if (std.mem.eql(u8, key, "trusted_proxy")) {
+            _ = std.Io.net.IpAddress.parse(value, 0) catch
+                return fail(diag, line_no, "trusted_proxy is not a valid IP address");
+            cfg.trusted_proxy = try arena.dupe(u8, value);
         } else if (std.mem.eql(u8, key, "docker_socket")) {
             cfg.docker_socket = try arena.dupe(u8, value);
         } else if (std.mem.eql(u8, key, "secure_cookies")) {
@@ -128,6 +137,16 @@ test "parses all keys" {
     try std.testing.expectEqualStrings("/tmp/nodos", cfg.data_dir);
     try std.testing.expectEqual(LogLevel.debug, cfg.log_level);
     try std.testing.expectEqual(@as(u32, 1000), cfg.sample_interval_ms);
+}
+
+test "trusted_proxy must be an ip" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var d: Diagnostic = .{};
+    const cfg = try parse(arena.allocator(), "trusted_proxy = 127.0.0.1\n", &d);
+    try std.testing.expectEqualStrings("127.0.0.1", cfg.trusted_proxy);
+    try std.testing.expectError(error.InvalidConfig, parse(arena.allocator(), "trusted_proxy = proxy.local", &d));
+    try std.testing.expectEqualStrings("", (try parse(arena.allocator(), "", &d)).trusted_proxy);
 }
 
 test "services list parses and rejects option-looking names" {

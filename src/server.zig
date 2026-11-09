@@ -218,9 +218,12 @@ const err_docker_off: Reply = .{ .status = .service_unavailable, .body = "{\"err
 const err_docker_down: Reply = .{ .status = .service_unavailable, .body = "{\"error\":\"docker is not reachable\"}" };
 const err_docker_odd: Reply = .{ .status = .bad_gateway, .body = "{\"error\":\"docker sent an unexpected reply\"}" };
 
+const err_docker_slow: Reply = .{ .status = .gateway_timeout, .body = "{\"error\":\"docker did not answer in time\"}" };
+
 fn dockerFailure(err: anyerror) Reply {
     return switch (err) {
         error.Unavailable => err_docker_down,
+        error.TimedOut => err_docker_slow,
         error.InvalidTarget => err_bad,
         error.OutOfMemory => err_internal,
         else => err_docker_odd,
@@ -471,6 +474,58 @@ test "stripPort" {
     try std.testing.expectEqualStrings("?", stripPort("?"));
 }
 
+/// The client address a trusted proxy reports: the rightmost X-Forwarded-For
+/// entry, because that is the one our own proxy appended. Earlier entries came
+/// from the client and can say anything.
+fn rightmostForwarded(xff: []const u8) ?Io.net.IpAddress {
+    const comma = std.mem.findScalarLast(u8, xff, ',');
+    const last = std.mem.trim(u8, if (comma) |c| xff[c + 1 ..] else xff, " \t");
+    if (last.len == 0) return null;
+    // IPv6 may arrive bracketed; strip a port-less bracket pair.
+    const bare = if (last.len > 2 and last[0] == '[' and last[last.len - 1] == ']') last[1 .. last.len - 1] else last;
+    return Io.net.IpAddress.parse(bare, 0) catch null;
+}
+
+/// Same host, ignoring port.
+fn sameHost(a: Io.net.IpAddress, b: Io.net.IpAddress) bool {
+    return switch (a) {
+        .ip4 => |x| switch (b) {
+            .ip4 => |y| std.mem.eql(u8, &x.bytes, &y.bytes),
+            else => false,
+        },
+        .ip6 => |x| switch (b) {
+            .ip6 => |y| std.mem.eql(u8, &x.bytes, &y.bytes),
+            else => false,
+        },
+    };
+}
+
+fn formatHost(addr: Io.net.IpAddress, buf: []u8) []const u8 {
+    return stripPort(std.fmt.bufPrint(buf, "{f}", .{addr}) catch return "?");
+}
+
+test "forwarded address: rightmost wins, junk is ignored" {
+    const a = rightmostForwarded("9.9.9.9, 203.0.113.7").?;
+    try std.testing.expect(sameHost(a, try Io.net.IpAddress.parse("203.0.113.7", 0)));
+    try std.testing.expect(rightmostForwarded("203.0.113.7").?.ip4.bytes[3] == 7);
+    // a client claiming to be someone else only controls the left side
+    const spoof = rightmostForwarded("10.0.0.1, 198.51.100.4").?;
+    try std.testing.expect(sameHost(spoof, try Io.net.IpAddress.parse("198.51.100.4", 0)));
+    try std.testing.expect(rightmostForwarded("") == null);
+    try std.testing.expect(rightmostForwarded("not an ip") == null);
+    try std.testing.expect(rightmostForwarded("1.2.3.4,") == null);
+    const v6 = rightmostForwarded("1.2.3.4, [2001:db8::1]").?;
+    try std.testing.expect(v6 == .ip6);
+}
+
+test "sameHost ignores ports and families" {
+    const a = try Io.net.IpAddress.parse("127.0.0.1", 1111);
+    const b = try Io.net.IpAddress.parse("127.0.0.1", 2222);
+    const c = try Io.net.IpAddress.parse("::1", 1111);
+    try std.testing.expect(sameHost(a, b));
+    try std.testing.expect(!sameHost(a, c));
+}
+
 fn clientKey(addr: Io.net.IpAddress) ratelimit.Key {
     var k: ratelimit.Key = @splat(0);
     switch (addr) {
@@ -610,7 +665,12 @@ fn serveConnection(io: Io, app: *App, pool: *Pool, slot: *Slot, stream: Io.net.S
 
     const client = clientKey(stream.socket.address);
     var ip_buf: [64]u8 = undefined;
-    const ip_text = stripPort(std.fmt.bufPrint(&ip_buf, "{f}", .{stream.socket.address}) catch "?");
+    const ip_text = formatHost(stream.socket.address, &ip_buf);
+    // Only a proxy named in the config gets to say who the client really is.
+    const proxy_trusted = if (app.cfg.trusted_proxy.len > 0) blk: {
+        const p = Io.net.IpAddress.parse(app.cfg.trusted_proxy, 0) catch break :blk false;
+        break :blk sameHost(p, stream.socket.address);
+    } else false;
 
     while (true) {
         var req = srv.receiveHead() catch |err| {
@@ -631,9 +691,15 @@ fn serveConnection(io: Io, app: *App, pool: *Pool, slot: *Slot, stream: Io.net.S
             .ip_text = ip_text,
             .now_s = Io.Timestamp.now(io, .real).toSeconds(),
         };
+        var fwd_buf: [64]u8 = undefined;
         var it = req.iterateHeaders();
         while (it.next()) |h| {
-            if (std.ascii.eqlIgnoreCase(h.name, "cookie")) {
+            if (proxy_trusted and std.ascii.eqlIgnoreCase(h.name, "x-forwarded-for")) {
+                if (rightmostForwarded(h.value)) |addr| {
+                    ctx.client = clientKey(addr);
+                    ctx.ip_text = formatHost(addr, &fwd_buf);
+                }
+            } else if (std.ascii.eqlIgnoreCase(h.name, "cookie")) {
                 if (cookieValue(h.value, cookie_name)) |v| {
                     if (v.len == 43) ctx.cookie_token = v[0..43].*;
                 }
