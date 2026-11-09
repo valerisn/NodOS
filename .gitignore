@@ -1,0 +1,12 @@
+.zig-cache/
+zig-cache/
+zig-out/
+*.log
+*.tmp
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+/dist/
+/nodos.conf
+/data/
