@@ -49,8 +49,8 @@ implemented and tested.
 
 ## Phase 6: Release
 
-- [ ] Security review
-- [ ] Performance measurements recorded against the budget
+- [x] Security self-review written (docs/security); independent review and fuzzing still open
+- [x] Performance measured on Linux against the budget (CI step, numbers in docs/development/performance.md); long soak still to do
 - [x] Install docs, hardened systemd unit and installer; CI installs and starts the service on Ubuntu (not yet tried on a real home server)
 - [ ] Signed release builds, first public release
 

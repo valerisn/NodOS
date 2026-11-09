@@ -65,10 +65,16 @@ These are real. None is hidden elsewhere.
    `nodos`; there is no live user management through the web interface.
 9. **Thresholds for alerts are fixed**, and alerts are in-app only. There is no
    outbound email or webhook, so an alert nobody is looking at is silent.
-10. **The standard library is young.** `std.http.Server` crashed on one class of
+10. **An idle-connection flood denies service while it lasts.** The server
+    holds 256 connections; an attacker who keeps opening idle ones keeps them
+    all busy, and each is only cut after 15 seconds. It recovers by itself as
+    soon as the attacker stops (verified in CI), but while it continues, real
+    users are locked out. Put rate limiting in the reverse proxy. On Windows
+    (development only) the cutoff does not free slots until the client lets go.
+11. **The standard library is young.** `std.http.Server` crashed on one class of
     input (fixed with a guard). More such edges are likely. The request path
     has not been fuzzed.
-11. **No independent review or penetration test has been done.**
+12. **No independent review or penetration test has been done.**
 
 ## Self-review checklist (2026-11-09)
 
