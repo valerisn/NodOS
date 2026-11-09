@@ -9,10 +9,29 @@ const usage =
     \\
     \\Commands:
     \\  serve [--config PATH]   Run the server
-    \\  version    Print version and exit
-    \\  help       Show this message
+    \\  version                 Print version and exit
+    \\  help                    Show this message
     \\
 ;
+
+// Filter at runtime so the config file can set the level. The journal adds
+// timestamps when we run under systemd, so we don't bother with our own.
+var runtime_level: std.atomic.Value(u8) = .init(@backingInt(std.log.Level.info));
+
+pub const std_options: std.Options = .{
+    .log_level = .debug,
+    .logFn = logFn,
+};
+
+fn logFn(
+    comptime level: std.log.Level,
+    comptime scope: @EnumLiteral(),
+    comptime format: []const u8,
+    args: anytype,
+) void {
+    if (@backingInt(level) > runtime_level.load(.monotonic)) return;
+    std.log.defaultLog(level, scope, format, args);
+}
 
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
@@ -31,9 +50,47 @@ pub fn main(init: std.process.Init) !void {
         .help => try w.writeAll(usage),
         .version => try w.print("nodos {s}\n", .{nodos.version}),
         .serve => {
-            std.debug.print("nodos: serve is not implemented yet\n", .{});
-            std.process.exit(1);
+            const cfg = loadConfig(init.io, arena, cmd.config_path);
+            runtime_level.store(@backingInt(toLogLevel(cfg.log_level)), .monotonic);
+            nodos.server.run(init.io, cfg) catch |err| {
+                std.log.err("server stopped: {s}", .{@errorName(err)});
+                std.process.exit(1);
+            };
         },
     }
     try w.flush();
+}
+
+fn toLogLevel(l: nodos.config.LogLevel) std.log.Level {
+    return switch (l) {
+        .err => .err,
+        .warn => .warn,
+        .info => .info,
+        .debug => .debug,
+    };
+}
+
+/// Exits the process on any problem. Starting with a half-read config is
+/// worse than not starting.
+fn loadConfig(io: Io, arena: std.mem.Allocator, path: ?[]const u8) nodos.config.Config {
+    const p = path orelse return .{};
+    const text = Io.Dir.cwd().readFileAlloc(io, p, arena, .limited(64 * 1024)) catch |err| {
+        std.debug.print("nodos: cannot read {s}: {s}\n", .{ p, @errorName(err) });
+        std.process.exit(1);
+    };
+    var diag: nodos.config.Diagnostic = .{};
+    return nodos.config.parse(arena, text, &diag) catch |err| switch (err) {
+        error.InvalidConfig => {
+            std.debug.print("nodos: {s}:{d}: {s}\n", .{ p, diag.line, diag.message });
+            std.process.exit(1);
+        },
+        error.OutOfMemory => {
+            std.debug.print("nodos: out of memory\n", .{});
+            std.process.exit(1);
+        },
+    };
+}
+
+test {
+    _ = nodos;
 }

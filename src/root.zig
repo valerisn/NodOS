@@ -6,6 +6,7 @@ pub const version: []const u8 = @import("build_options").version;
 
 pub const cli = @import("cli.zig");
 pub const config = @import("config.zig");
+pub const server = @import("server.zig");
 
 test {
     std.testing.refAllDecls(@This());

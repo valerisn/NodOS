@@ -61,11 +61,23 @@ through a shell. Actions are an enumerated set; arguments are validated and
 passed as an argv array, never concatenated into a command line. This rules out
 a web terminal and a "run command" widget by design.
 
+## D8. HTTP: std.http.Server over std.Io streams
+
+Spike result: `std.http.Server` takes a plain Reader/Writer pair, so it sits on
+`Io.net.Stream` with one task per connection and a connection cap. Routing,
+keep-alive, HEAD and error paths work; Debug build RSS was about 7 MB after 300
+requests. A hand-written server is not justified.
+
+Costs found while testing: the standard library asserts instead of returning an
+error when a POST has no Content-Length or Transfer-Encoding, which lets any
+client crash the process. `server.zig` guards against it and answers 411.
+Expect more edges like this. Fuzz the request path before release. There are
+also no read timeouts yet (see the TODO in `server.zig`).
+
 ## Open decisions
 
-- **HTTP server**: `std.http.Server` versus a minimal hand-written HTTP/1.1
-  server on `std.Io` sockets. Decide in Phase 2 after a spike measuring memory
-  and handling of many idle SSE connections.
+- **SSE under load**: still unmeasured. Many idle streaming connections need a
+  test before the live stream ships.
 - **TLS**: terminate in NodOS (std.crypto.tls server support is limited) or
   require a reverse proxy. Leaning toward documented reverse-proxy deployment
   plus optional certificate loading if the standard library can do it safely.
