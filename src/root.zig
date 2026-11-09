@@ -13,6 +13,9 @@ pub const ratelimit = @import("ratelimit.zig");
 pub const audit = @import("audit.zig");
 pub const agent = struct {
     pub const proc = @import("agent/proc.zig");
+    pub const collect = @import("agent/collect.zig");
+    pub const sampler = @import("agent/sampler.zig");
+    pub const encode = @import("agent/encode.zig");
 };
 
 test {
