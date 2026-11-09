@@ -59,6 +59,19 @@ CSRF="$(echo "$LOGIN" | grep -o '"csrf":"[^"]*"' | cut -d'"' -f4)"
 [ -n "$TOKEN" ] && [ -n "$CSRF" ] || fail "no token or csrf in login response"
 
 [ "$(status -H "Cookie: nodos_session=$TOKEN" "$URL/me")" = "200" ] || fail "me with cookie"
+[ "$(status "$URL/system")" = "401" ] || fail "system without cookie should be 401"
+if [ -z "${SMOKE_SKIP_POSIX:-}" ]; then
+    # Linux only: real /proc data. Default interval is 2 s, so by 5 s there
+    # are at least two samples and one plotted history point.
+    sleep 5
+    SYS="$(curl -s -H "Cookie: nodos_session=$TOKEN" "$URL/system")"
+    echo "$SYS" | grep -Eq '"hostname":"[^"]+"' || fail "system: no hostname: $SYS"
+    echo "$SYS" | grep -Eq '"total_kb":[1-9][0-9]*' || fail "system: no memory total: $SYS"
+    echo "$SYS" | grep -Eq '"cores":\[[0-9.]+' || fail "system: no cpu cores: $SYS"
+    HIST="$(curl -s -H "Cookie: nodos_session=$TOKEN" "$URL/history")"
+    echo "$HIST" | grep -Eq '"ts":\[[0-9]+' || fail "history empty after sampling: $HIST"
+fi
+
 [ "$(status -X POST -d '' -H "Cookie: nodos_session=$TOKEN" "$URL/logout")" = "403" ] || fail "logout without csrf"
 [ "$(status -X POST -d '' -H "Cookie: nodos_session=$TOKEN" -H "x-csrf-token: $CSRF" "$URL/logout")" = "200" ] || fail "logout"
 [ "$(status -H "Cookie: nodos_session=$TOKEN" "$URL/me")" = "401" ] || fail "me after logout"

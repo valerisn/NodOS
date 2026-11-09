@@ -44,6 +44,44 @@ Requires a session. Returns `{"username","role","csrf"}`. 401 otherwise.
 Requires a session and `x-csrf-token`. Destroys the session and clears the
 cookie. 403 on a missing or wrong CSRF token.
 
+### `GET /api/v1/system`
+
+Requires a session. The latest host snapshot, sampled every `sample_interval_ms`:
+
+```json
+{
+  "ts": 1794216317, "hostname": "homebox", "os": "Debian GNU/Linux 13",
+  "kernel": "6.8.0", "uptime_s": 350735, "load": [0.5, 0.6, 0.6],
+  "cpu": {"percent": 12.5, "cores": [10.0, 15.0]},
+  "memory": {"total_kb": 16318244, "used_kb": 6441701, "available_kb": 9876543,
+             "swap_total_kb": 2097148, "swap_used_kb": 148},
+  "network": [{"name": "eth0", "rx_bytes": 0, "tx_bytes": 0, "rx_bps": 0,
+               "tx_bps": 0, "rx_errors": 0, "tx_errors": 0}],
+  "storage": [{"device": "/dev/sda1", "mount": "/", "fstype": "ext4",
+               "total_bytes": 0, "used_bytes": 0, "avail_bytes": 0}],
+  "temperatures": [{"label": "x86_pkg_temp", "celsius": 47.0}]
+}
+```
+
+CPU percentages and network rates are computed between two samples, so they
+read 0 on the very first one. Only real filesystems appear in `storage`
+(ext4, xfs, btrfs, zfs, vfat, nfs and similar; tmpfs and overlay are hidden).
+`temperatures` is empty on machines without thermal zones.
+
+503 when no sample exists yet, or when the host OS is not Linux.
+
+### `GET /api/v1/history`
+
+Requires a session. Up to 300 recent samples (ten minutes at the default
+interval), oldest first, as parallel arrays:
+
+```json
+{"ts": [1794216317], "cpu": [12.5], "mem": [39.5], "rx_bps": [1200], "tx_bps": [300]}
+```
+
+`rx_bps` and `tx_bps` sum all interfaces except `lo`. History is in memory only
+and resets when the server restarts.
+
 ## Errors
 
 Errors are `{"error": "message"}` with a matching HTTP status. A `POST` with no

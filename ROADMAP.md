@@ -26,11 +26,11 @@ implemented and tested.
 - [ ] Trusted proxy setting for client addresses
 - [ ] Fuzz the request path
 
-## Phase 3: Monitoring
+## Phase 3: Monitoring (in progress)
 
-- [ ] Parsers for `/proc/stat`, `/proc/meminfo`, `/proc/net/dev`, `/proc/uptime`
-- [ ] Disks, mounts, filesystem usage, temperature sensors
-- [ ] Sampler with in-memory history
+- [x] Parsers for `/proc/stat`, `/proc/meminfo`, `/proc/net/dev`, `/proc/uptime`, mounts (unit tested on fixtures)
+- [x] Mounts, filesystem usage (statfs), thermal zones (compiles for Linux; real-host test runs in CI)
+- [x] Sampler with in-memory history
 - [ ] SSE live stream
 
 ## Phase 4: Dashboard

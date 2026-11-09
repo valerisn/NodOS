@@ -44,17 +44,12 @@ pub const Sampler = struct {
     pub fn ingest(s: *Sampler, io: Io, snap: Snapshot) void {
         s.mutex.lockUncancelable(io);
         defer s.mutex.unlock(io);
+        const first = !s.have_latest;
         s.latest = snap;
         s.have_latest = true;
-        // The very first sample has no previous counters, so its rates are
-        // all zero. Plotting it would draw a fake dip to zero.
-        if (s.count == 0 and s.head == 0 and snap.cpu_pct == 0 and snap.iface_count > 0) {
-            var all_zero = true;
-            for (snap.ifaces[0..snap.iface_count]) |i| if (i.rx_bps != 0 or i.tx_bps != 0) {
-                all_zero = false;
-            };
-            if (all_zero) return;
-        }
+        // The very first sample has no previous counters, so cpu and network
+        // rates are all zero. Plotting it would draw a fake dip to zero.
+        if (first) return;
         s.ring[s.head] = pointFrom(&snap);
         s.head = (s.head + 1) % history_len;
         if (s.count < history_len) s.count += 1;

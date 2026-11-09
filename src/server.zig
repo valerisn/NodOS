@@ -11,6 +11,8 @@ const auth = @import("auth.zig");
 const users_mod = @import("users.zig");
 const ratelimit = @import("ratelimit.zig");
 const audit = @import("audit.zig");
+const sampler_mod = @import("agent/sampler.zig");
+const encode = @import("agent/encode.zig");
 const version = @import("build_options").version;
 
 const log = std.log.scoped(.server);
@@ -31,6 +33,7 @@ pub const App = struct {
     users: users_mod.Users,
     sessions: auth.SessionStore = .{},
     limiter: ratelimit.Limiter = .{},
+    sampler: sampler_mod.Sampler = .{},
     /// Null in tests.
     audit_log: ?audit.Log = null,
     /// A real hash of a throwaway password, verified against when the
@@ -83,6 +86,8 @@ pub const Ctx = struct {
 pub const Scratch = struct {
     body: [512]u8 = undefined,
     cookie: [192]u8 = undefined,
+    /// Worst case snapshot (128 cores, 16 interfaces, 32 mounts) is ~20 KB of JSON.
+    big: [32 * 1024]u8 = undefined,
 };
 
 const err_not_found: Reply = .{ .status = .not_found, .body = "{\"error\":\"not found\"}" };
@@ -91,6 +96,7 @@ const err_unauth: Reply = .{ .status = .unauthorized, .body = "{\"error\":\"unau
 const err_forbidden: Reply = .{ .status = .forbidden, .body = "{\"error\":\"forbidden\"}" };
 const err_bad: Reply = .{ .status = .bad_request, .body = "{\"error\":\"bad request\"}" };
 const err_internal: Reply = .{ .status = .internal_server_error, .body = "{\"error\":\"internal\"}" };
+const err_unavailable: Reply = .{ .status = .service_unavailable, .body = "{\"error\":\"monitoring data not available\"}" };
 
 pub fn dispatch(app: *App, io: Io, ctx: Ctx, body: []const u8, s: *Scratch) Reply {
     const get = ctx.method == .GET or ctx.method == .HEAD;
@@ -108,6 +114,25 @@ pub fn dispatch(app: *App, io: Io, ctx: Ctx, body: []const u8, s: *Scratch) Repl
         if (!get) return err_method;
         const sess = currentSession(app, io, ctx) orelse return err_unauth;
         return sessionInfo(app, sess, ctx, s);
+    }
+    if (std.mem.eql(u8, ctx.path, "/api/v1/system")) {
+        if (!get) return err_method;
+        _ = currentSession(app, io, ctx) orelse return err_unauth;
+        if (app.sampler.isUnsupported(io)) return err_unavailable;
+        const snap = app.sampler.latestCopy(io) orelse return err_unavailable;
+        var w: Io.Writer = .fixed(&s.big);
+        encode.writeSnapshot(&w, &snap) catch return err_internal;
+        return .{ .status = .ok, .body = w.buffered() };
+    }
+    if (std.mem.eql(u8, ctx.path, "/api/v1/history")) {
+        if (!get) return err_method;
+        _ = currentSession(app, io, ctx) orelse return err_unauth;
+        if (app.sampler.isUnsupported(io)) return err_unavailable;
+        var pts: [sampler_mod.history_len]sampler_mod.Point = undefined;
+        const n = app.sampler.historyCopy(io, &pts);
+        var w: Io.Writer = .fixed(&s.big);
+        encode.writeHistory(&w, pts[0..n]) catch return err_internal;
+        return .{ .status = .ok, .body = w.buffered() };
     }
     if (std.mem.eql(u8, ctx.path, "/api/v1/logout")) {
         if (ctx.method != .POST) return err_method;
@@ -314,6 +339,7 @@ pub fn run(io: Io, app: *App) !void {
     var group: Io.Group = .init;
     defer group.cancel(io);
     try group.concurrent(io, reaper, .{ io, &pool });
+    try group.concurrent(io, sampler_mod.Sampler.run, .{ &app.sampler, io, app.cfg.sample_interval_ms });
 
     while (true) {
         const stream = listener.accept(io) catch |err| switch (err) {
@@ -527,6 +553,48 @@ test "login, me, csrf, logout" {
     out_ctx.csrf = csrf;
     try std.testing.expectEqual(http.Status.ok, dispatch(&app, io, out_ctx, "", &s2).status);
     try std.testing.expectEqual(http.Status.unauthorized, dispatch(&app, io, me_ctx, "", &s2).status);
+}
+
+test "system and history need a session and real data" {
+    const io = std.testing.io;
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var app = try testApp(arena.allocator());
+    defer app.deinit(io);
+    var s: Scratch = .{};
+
+    // anonymous
+    try std.testing.expectEqual(http.Status.unauthorized, dispatch(&app, io, testCtx(.GET, "/api/v1/system"), "", &s).status);
+    try std.testing.expectEqual(http.Status.unauthorized, dispatch(&app, io, testCtx(.GET, "/api/v1/history"), "", &s).status);
+
+    const issued = try app.sessions.create(app.gpa, io, 1, .viewer, 1000);
+    var ctx = testCtx(.GET, "/api/v1/system");
+    ctx.cookie_token = issued.token;
+
+    // authenticated but no sample yet
+    try std.testing.expectEqual(http.Status.service_unavailable, dispatch(&app, io, ctx, "", &s).status);
+
+    var snap: @import("agent/collect.zig").Snapshot = .{ .ts_s = 1000, .cpu_pct = 25 };
+    snap.mem = .{ .total_kb = 1000, .available_kb = 250 };
+    snap.hostname.set("testbox");
+    app.sampler.ingest(io, snap);
+    // The first sample is never plotted (no counters to diff), so history
+    // needs a second one before it has anything to show.
+    snap.ts_s = 1002;
+    app.sampler.ingest(io, snap);
+
+    const sys = dispatch(&app, io, ctx, "", &s);
+    try std.testing.expectEqual(http.Status.ok, sys.status);
+    try std.testing.expect(std.mem.find(u8, sys.body, "\"hostname\":\"testbox\"") != null);
+
+    ctx.path = "/api/v1/history";
+    const hist = dispatch(&app, io, ctx, "", &s);
+    try std.testing.expectEqual(http.Status.ok, hist.status);
+    try std.testing.expect(std.mem.startsWith(u8, hist.body, "{\"ts\":[1002]"));
+
+    // wrong method
+    ctx.method = .POST;
+    try std.testing.expectEqual(http.Status.method_not_allowed, dispatch(&app, io, ctx, "", &s).status);
 }
 
 test "lockout after repeated failures" {
