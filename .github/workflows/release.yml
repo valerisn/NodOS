@@ -1,19 +1,25 @@
 name: Release
 
-# Push a tag like v0.1.0 to publish. The tag must match build.zig.zon, the
-# first step checks that so we never ship a binary that reports the wrong version.
+# Push a tag like v0.1.0 to publish a GitHub release. The tag must match
+# build.zig.zon, the first step checks that so we never ship a binary that
+# reports the wrong version.
+#
+# To test the whole pipeline without publishing anything, run this workflow by
+# hand (Actions tab, "Run workflow"). A manual run builds everything, uploads
+# the tarballs as a workflow artifact and stops before the release step.
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   ZIG_VERSION: 0.17.0
 
 jobs:
-  release:
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,10 +27,12 @@ jobs:
         with:
           version: ${{ env.ZIG_VERSION }}
 
-      - name: Tag matches build.zig.zon
+      - name: Version
+        id: ver
         run: |
           zon_version=$(grep -oP '\.version = "\K[^"]+' build.zig.zon)
-          if [ "v${zon_version}" != "${GITHUB_REF_NAME}" ]; then
+          echo "zon=${zon_version}" >> "$GITHUB_OUTPUT"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "v${zon_version}" != "${GITHUB_REF_NAME}" ]; then
             echo "tag ${GITHUB_REF_NAME} does not match build.zig.zon version ${zon_version}" >&2
             exit 1
           fi
@@ -32,16 +40,46 @@ jobs:
       - name: Test
         run: zig build test
 
-      - name: Build all targets
+      - name: Build and package
         run: |
+          set -euo pipefail
+          VERSION="${{ steps.ver.outputs.zon }}"
           mkdir dist
           for target in x86_64-linux-musl aarch64-linux-musl; do
             zig build -Dtarget=$target -Doptimize=ReleaseSafe -Dstrip=true --prefix "out/$target"
-            tar -C "out/$target/bin" -czf "dist/nodos-${GITHUB_REF_NAME}-$target.tar.gz" nodos
+            name="nodos-v${VERSION}-${target%-musl}"
+            mkdir -p "pkg/$name/scripts" "pkg/$name/packaging"
+            cp "out/$target/bin/nodos" "pkg/$name/nodos"
+            cp scripts/install.sh "pkg/$name/scripts/"
+            cp packaging/* "pkg/$name/packaging/"
+            cp LICENSE README.md CHANGELOG.md "pkg/$name/"
+            tar -C pkg -czf "dist/$name.tar.gz" "$name"
           done
-          (cd dist && sha256sum * > SHA256SUMS)
+          (cd dist && sha256sum ./*.tar.gz > SHA256SUMS && cat SHA256SUMS)
 
+      - name: Check the x86_64 binary runs and reports its version
+        run: |
+          tar -xzf dist/nodos-v${{ steps.ver.outputs.zon }}-x86_64-linux.tar.gz -C /tmp
+          /tmp/nodos-v${{ steps.ver.outputs.zon }}-x86_64-linux/nodos version | grep -q "${{ steps.ver.outputs.zon }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nodos-release-files
+          path: dist/*
+
+  publish:
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: nodos-release-files
+          path: dist
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: gh release create "$GITHUB_REF_NAME" dist/* --generate-notes --title "$GITHUB_REF_NAME"
