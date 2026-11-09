@@ -39,8 +39,18 @@ for _ in range(320):
         pass
 print(f"holding {len(held)} idle connections", flush=True)
 
-# Give the accept loop time to take them all and fill every slot.
-time.sleep(3)
+# A real attacker keeps knocking, so any slot that frees up gets taken again.
+# Do that for a few seconds so the last spare slot (one slot was left over by a
+# just-closed connection in CI) is filled too.
+t_end = time.time() + 4
+while time.time() < t_end:
+    for _ in range(25):
+        try:
+            held.append(socket.create_connection(("127.0.0.1", port), timeout=2))
+        except OSError:
+            pass
+    time.sleep(0.2)
+print(f"now holding {len(held)} sockets, including ones the server already dropped", flush=True)
 
 saturated = not healthy()
 print(f"saturated: {saturated}", flush=True)
