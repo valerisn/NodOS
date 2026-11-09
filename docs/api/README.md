@@ -129,6 +129,29 @@ Admin only. The newest audit entries first, `limit` 1 to 200 (default 100):
 `{"entries":[{"ts","actor","action","target","ok","ip"}]}`. Reads the tail of
 `audit.log`, so very old entries need the file itself.
 
+### Services (systemd)
+
+Shows and controls the units named in the config's `services` line, through
+`systemctl` and `journalctl` with fixed arguments. No shell is involved.
+
+| Route | Who | Notes |
+| --- | --- | --- |
+| `GET /api/v1/services` | any signed-in user | `{"services":[{unit,description,load,active,sub,pid}]}` for every configured unit |
+| `GET /api/v1/services/{unit}/logs?tail=N` | admin | Journal lines, same shape as Docker logs |
+| `POST /api/v1/services/{unit}/start`, `stop`, `restart` | admin, CSRF | Audited as `service.start` and so on, target is the unit |
+
+A unit that is not in the allowlist answers 404 whatever it looks like, and so
+does any verb other than the three above (`mask`, `disable`, `kill` and the
+rest never run). `load: "not-found"` means the unit is listed but not
+installed.
+
+NodOS runs unprivileged, so starting and stopping needs permission from the OS.
+When systemd refuses, the answer is 502 with systemd's own message, for example
+`systemd refused: Interactive authentication required.` That is a polkit
+question; see the installation guide for a rule scoped to just your units.
+503 means no services are configured or systemd is missing, 504 means systemd
+did not answer within 10 seconds.
+
 ### Docker
 
 Talks to the Docker Engine over its Unix socket (`docker_socket` in the

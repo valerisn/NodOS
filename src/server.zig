@@ -14,6 +14,7 @@ const audit = @import("audit.zig");
 const assets = @import("assets.zig");
 const alerts_mod = @import("alerts.zig");
 const docker = @import("integrations/docker.zig");
+const systemd = @import("integrations/systemd.zig");
 const sampler_mod = @import("agent/sampler.zig");
 const encode = @import("agent/encode.zig");
 const version = @import("build_options").version;
@@ -41,6 +42,8 @@ pub const App = struct {
     alerts: alerts_mod.Engine = .{},
     /// Null when the admin set `docker_socket = off`.
     docker: ?docker.Client = null,
+    /// Null when the config lists no services.
+    systemd: ?systemd.Client = null,
     /// Null in tests.
     audit_log: ?audit.Log = null,
     /// A real hash of a throwaway password, verified against when the
@@ -53,6 +56,9 @@ pub const App = struct {
         var app: App = .{ .gpa = gpa, .cfg = cfg, .users = users };
         if (!std.mem.eql(u8, cfg.docker_socket, "off")) {
             app.docker = .{ .io = io, .socket_path = cfg.docker_socket };
+        }
+        if (cfg.services.len > 0) {
+            app.systemd = .{ .io = io, .gpa = gpa, .units = cfg.services };
         }
         var pw: [24]u8 = undefined;
         try io.randomSecure(&pw);
@@ -201,6 +207,7 @@ pub fn dispatch(app: *App, io: Io, ctx: Ctx, body: []const u8, s: *Scratch) Repl
         return .{ .status = .ok, .body = "{\"ok\":true}", .set_cookie = cookie(app, s, "", 0) };
     }
     if (std.mem.startsWith(u8, ctx.path, "/api/v1/docker/")) return dockerRoute(app, io, ctx, s);
+    if (std.mem.startsWith(u8, ctx.path, "/api/v1/services")) return serviceRoute(app, io, ctx, s);
     if (get) if (assets.find(ctx.path)) |a| {
         return .{ .status = .ok, .content_type = a.content_type, .body = a.body };
     };
@@ -287,6 +294,90 @@ fn dockerRoute(app: *App, io: Io, ctx: Ctx, s: *Scratch) Reply {
         .not_found => .{ .status = .not_found, .body = "{\"error\":\"no such container\"}" },
         .failed => err_docker_odd,
     };
+}
+
+const err_svc_off: Reply = .{ .status = .service_unavailable, .body = "{\"error\":\"no services are configured\"}" };
+const err_svc_down: Reply = .{ .status = .service_unavailable, .body = "{\"error\":\"systemd is not available on this host\"}" };
+const err_svc_slow: Reply = .{ .status = .gateway_timeout, .body = "{\"error\":\"systemd did not answer in time\"}" };
+
+fn serviceFailure(err: anyerror) Reply {
+    return switch (err) {
+        error.Unavailable => err_svc_down,
+        error.TimedOut => err_svc_slow,
+        error.OutOfMemory => err_internal,
+        else => err_docker_odd,
+    };
+}
+
+/// /api/v1/services and /api/v1/services/{unit}/{logs|start|stop|restart}.
+/// Same rules as Docker: anyone signed in may look, admins read logs and act,
+/// actions need the CSRF token and are audited. On top of that, a unit must be
+/// on the config allowlist, so a typo or an attack can't reach any other unit.
+fn serviceRoute(app: *App, io: Io, ctx: Ctx, s: *Scratch) Reply {
+    const sess = currentSession(app, io, ctx) orelse return err_unauth;
+    const client = app.systemd orelse return err_svc_off;
+    const rest = ctx.path["/api/v1/services".len..];
+
+    var arena: std.heap.ArenaAllocator = .init(app.gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    if (rest.len == 0) {
+        if (ctx.method != .GET and ctx.method != .HEAD) return err_method;
+        const list = client.statuses(a) catch |e| return serviceFailure(e);
+        var w: Io.Writer = .fixed(&s.big);
+        systemd.writeStatuses(&w, list) catch return err_internal;
+        return .{ .status = .ok, .body = w.buffered() };
+    }
+
+    if (rest[0] != '/') return err_not_found;
+    const tail = rest[1..];
+    const slash = std.mem.findScalar(u8, tail, '/') orelse return err_not_found;
+    const unit = tail[0..slash];
+    const verb = tail[slash + 1 ..];
+    if (!client.allowed(unit)) return err_not_found;
+
+    if (std.mem.eql(u8, verb, "logs")) {
+        if (ctx.method != .GET) return err_method;
+        if (sess.role != .admin) return err_forbidden;
+        const lines = std.math.clamp(queryInt(ctx.query, "tail") orelse 100, 1, 500);
+        const text = client.logs(a, unit, lines) catch |e| return serviceFailure(e);
+        var w: Io.Writer = .fixed(&s.big);
+        docker.writeLogs(a, &w, text, lines) catch return err_internal;
+        return .{ .status = .ok, .body = w.buffered() };
+    }
+
+    const action = systemd.Action.parse(verb) orelse return err_not_found;
+    if (ctx.method != .POST) return err_method;
+    if (sess.role != .admin) return err_forbidden;
+    if (!csrfOk(sess, ctx)) return err_forbidden;
+
+    var name_buf: [48]u8 = undefined;
+    const action_name = std.fmt.bufPrint(&name_buf, "service.{s}", .{@tagName(action)}) catch "service.action";
+    const outcome = client.act(a, unit, action) catch |e| {
+        app.recordTarget(io, ctx.now_s, userName(app, sess), action_name, unit, false, ctx.ip_text);
+        return serviceFailure(e);
+    };
+    switch (outcome) {
+        .done => {
+            app.recordTarget(io, ctx.now_s, userName(app, sess), action_name, unit, true, ctx.ip_text);
+            return .{ .status = .ok, .body = "{\"ok\":true,\"result\":\"done\"}" };
+        },
+        .refused => |msg| {
+            app.recordTarget(io, ctx.now_s, userName(app, sess), action_name, unit, false, ctx.ip_text);
+            // systemd's own words, JSON-escaped, so the admin sees "interactive
+            // authentication required" and knows it is a polkit question.
+            var msg_buf: [256]u8 = undefined;
+            const text = std.fmt.bufPrint(&msg_buf, "systemd refused: {s}", .{msg}) catch "systemd refused the request";
+            var w: Io.Writer = .fixed(&s.body);
+            var j: std.json.Stringify = .{ .writer = &w };
+            j.beginObject() catch return err_internal;
+            j.objectField("error") catch return err_internal;
+            j.write(text) catch return err_internal;
+            j.endObject() catch return err_internal;
+            return .{ .status = .bad_gateway, .body = w.buffered() };
+        },
+    }
 }
 
 fn login(app: *App, io: Io, ctx: Ctx, body: []const u8, s: *Scratch) Reply {
@@ -983,6 +1074,68 @@ test "docker routes enforce auth, role, csrf and validation before touching dock
     // integration off
     app.docker = null;
     try std.testing.expectEqualStrings("{\"error\":\"docker integration is turned off\"}", dispatch(&app, io, vl, "", &s).body);
+}
+
+test "service routes enforce auth, role, csrf and the allowlist before running anything" {
+    const io = std.testing.io;
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var app = try testApp(arena.allocator());
+    defer app.deinit(io);
+    const units = [_][]const u8{ "ssh", "nginx" };
+    app.systemd = .{ .io = io, .gpa = std.testing.allocator, .units = &units };
+    var s: Scratch = .{};
+
+    try std.testing.expectEqual(http.Status.unauthorized, dispatch(&app, io, testCtx(.GET, "/api/v1/services"), "", &s).status);
+    try std.testing.expectEqual(http.Status.unauthorized, dispatch(&app, io, testCtx(.POST, "/api/v1/services/ssh/restart"), "", &s).status);
+
+    const viewer = try app.sessions.create(app.gpa, io, 2, .viewer, 1000);
+    const admin = try app.sessions.create(app.gpa, io, 1, .admin, 1000);
+
+    var v = testCtx(.GET, "/api/v1/services/ssh/logs");
+    v.cookie_token = viewer.token;
+    try std.testing.expectEqual(http.Status.forbidden, dispatch(&app, io, v, "", &s).status);
+    v.method = .POST;
+    v.path = "/api/v1/services/ssh/stop";
+    v.csrf = viewer.csrf;
+    try std.testing.expectEqual(http.Status.forbidden, dispatch(&app, io, v, "", &s).status);
+
+    var ad = testCtx(.POST, "/api/v1/services/ssh/restart");
+    ad.cookie_token = admin.token;
+    // admin without csrf
+    try std.testing.expectEqual(http.Status.forbidden, dispatch(&app, io, ad, "", &s).status);
+    ad.csrf = admin.csrf;
+
+    // units off the allowlist are invisible, whatever they look like
+    for ([_][]const u8{
+        "/api/v1/services/sshd/restart",
+        "/api/v1/services/ssh.service/restart",
+        "/api/v1/services/--now/restart",
+        "/api/v1/services/ssh%20nginx/restart",
+        "/api/v1/services/../restart",
+        "/api/v1/services/getty@tty1/stop",
+    }) |p| {
+        ad.path = p;
+        try std.testing.expectEqual(http.Status.not_found, dispatch(&app, io, ad, "", &s).status);
+    }
+
+    // verbs outside start/stop/restart
+    for ([_][]const u8{ "mask", "disable", "kill", "enable", "daemon-reload", "isolate" }) |verb| {
+        var pb: [80]u8 = undefined;
+        ad.path = try std.fmt.bufPrint(&pb, "/api/v1/services/ssh/{s}", .{verb});
+        try std.testing.expectEqual(http.Status.not_found, dispatch(&app, io, ad, "", &s).status);
+    }
+
+    // wrong method on an allowed unit and verb
+    ad.path = "/api/v1/services/ssh/restart";
+    ad.method = .GET;
+    try std.testing.expectEqual(http.Status.method_not_allowed, dispatch(&app, io, ad, "", &s).status);
+
+    // feature off
+    app.systemd = null;
+    var any = testCtx(.GET, "/api/v1/services");
+    any.cookie_token = viewer.token;
+    try std.testing.expectEqual(http.Status.service_unavailable, dispatch(&app, io, any, "", &s).status);
 }
 
 test "query integer parsing" {

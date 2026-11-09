@@ -241,6 +241,8 @@ td.when { white-space: nowrap; color: var(--muted); }
 }
 .state[data-level="ok"]::before { background: var(--ok); }
 .state[data-level="warn"]::before { background: var(--warn); }
+.state[data-level="crit"]::before { background: var(--crit); }
+.state[data-level="crit"] { color: var(--crit); }
 .state[data-level="idle"] { color: var(--muted); }
 td.actions { white-space: nowrap; }
 td.actions button { margin-left: 6px; }

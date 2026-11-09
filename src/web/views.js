@@ -195,6 +195,44 @@ const DOCKER_HINTS = {
   "docker integration is turned off": "Docker is turned off in the NodOS config (docker_socket = off).",
 };
 
+// Log viewer shared by Docker and Services. `fetchLines` returns
+// {lines, truncated}; `explain` turns an error into words for the admin.
+function logPanel(explain) {
+  const title = h("h2", {});
+  const pre = h("pre", { class: "logs", tabindex: "0" });
+  const close = h("button", { type: "button", class: "quiet" }, "Close");
+  const refresh = h("button", { type: "button", class: "quiet" }, "Refresh");
+  const el = h("section", { class: "block", hidden: true }, h("div", { class: "block-head" }, title, h("span", { class: "spacer" }), refresh, close), pre);
+  let loader = null;
+
+  async function load() {
+    if (!loader) return;
+    try {
+      const d = await loader();
+      pre.textContent = d.lines.length ? d.lines.join("\n") : "No log output.";
+      if (d.truncated) pre.append("\n[older lines cut to fit]");
+      pre.scrollTop = pre.scrollHeight;
+    } catch (err) {
+      pre.textContent = "Could not read logs: " + explain(err);
+    }
+  }
+  refresh.addEventListener("click", load);
+  close.addEventListener("click", () => {
+    loader = null;
+    el.hidden = true;
+  });
+  return {
+    el,
+    open(name, fetchLines) {
+      loader = fetchLines;
+      title.textContent = `Logs: ${name}`;
+      pre.textContent = "Loading...";
+      el.hidden = false;
+      load();
+    },
+  };
+}
+
 function stateLevel(state) {
   if (state === "running") return "ok";
   if (state === "exited" || state === "created") return "idle";
@@ -212,15 +250,10 @@ export function dockerView({ role }) {
     h("thead", {}, h("tr", {}, h("th", {}, "Container"), h("th", {}, "State"), h("th", {}, "Status"), h("th", { class: "num" }, admin ? "Actions" : ""))),
     body,
   );
-  const logTitle = h("h2", {});
-  const logPre = h("pre", { class: "logs", tabindex: "0" });
-  const logClose = h("button", { type: "button", class: "quiet" }, "Close");
-  const logRefresh = h("button", { type: "button", class: "quiet" }, "Refresh");
-  const logBlock = h("section", { class: "block", hidden: true }, h("div", { class: "block-head" }, logTitle, h("span", { class: "spacer" }), logRefresh, logClose), logPre);
+  const logs = logPanel((err) => explain(err));
 
   let timer = null;
   let busy = false;
-  let logRef = null;
   let alive = true;
 
   function say(text, bad) {
@@ -288,32 +321,11 @@ export function dockerView({ role }) {
     }
   }
 
-  async function loadLogs() {
-    if (!logRef) return;
-    try {
-      const d = await get(`/docker/containers/${encodeURIComponent(logRef.id)}/logs?tail=200`);
-      logPre.textContent = d.lines.length ? d.lines.join("\n") : "No log output.";
-      if (d.truncated) logPre.append("\n[older lines cut to fit]");
-      logPre.scrollTop = logPre.scrollHeight;
-    } catch (err) {
-      logPre.textContent = "Could not read logs: " + explain(err);
-    }
-  }
-
   function openLogs(c) {
-    logRef = c;
-    logTitle.textContent = `Logs: ${c.name || c.id}`;
-    logPre.textContent = "Loading...";
-    logBlock.hidden = false;
-    loadLogs();
+    logs.open(c.name || c.id, () => get(`/docker/containers/${encodeURIComponent(c.id)}/logs?tail=200`));
   }
-  logRefresh.addEventListener("click", loadLogs);
-  logClose.addEventListener("click", () => {
-    logRef = null;
-    logBlock.hidden = true;
-  });
 
-  const el = h("div", {}, flash, message, table, logBlock);
+  const el = h("div", {}, flash, message, table, logs.el);
   return {
     el,
     activate() {
@@ -326,6 +338,115 @@ export function dockerView({ role }) {
       clearInterval(timer);
     },
     // The container list is polled, not streamed.
+    update() {},
+  };
+}
+
+// ---------------------------------------------------------------- services
+
+const SERVICE_HINTS = {
+  "no services are configured": "No services are listed yet. Add a services line to the NodOS config, for example: services = ssh, nginx",
+  "systemd is not available on this host": "systemd is not available on this host.",
+};
+
+function activeLevel(active) {
+  if (active === "active") return "ok";
+  if (active === "failed") return "crit";
+  if (active === "inactive") return "idle";
+  return "warn"; // activating, deactivating, reloading
+}
+
+export function serviceView({ role }) {
+  const admin = role === "admin";
+  const body = h("tbody");
+  const message = h("p", { class: "muted", role: "status" });
+  const flash = h("p", { class: "flash", role: "status", hidden: true });
+  const table = h(
+    "table",
+    { hidden: true },
+    h("thead", {}, h("tr", {}, h("th", {}, "Service"), h("th", {}, "State"), h("th", { class: "num" }, "PID"), h("th", { class: "num" }, admin ? "Actions" : ""))),
+    body,
+  );
+  const explain = (err) => SERVICE_HINTS[err.message] || err.message;
+  const logs = logPanel(explain);
+  let timer = null;
+  let busy = false;
+  let alive = true;
+
+  function say(text, bad) {
+    flash.hidden = !text;
+    flash.textContent = text || "";
+    flash.dataset.bad = bad ? "1" : "";
+  }
+
+  function button(label, onClick) {
+    const b = h("button", { type: "button", class: "quiet" }, label);
+    b.addEventListener("click", onClick);
+    return b;
+  }
+
+  function row(s) {
+    const up = s.active === "active";
+    const actions = h("td", { class: "num actions" });
+    if (admin && s.load !== "not-found") {
+      actions.append(
+        ...[button("Logs", () => logs.open(s.unit, () => get(`/services/${encodeURIComponent(s.unit)}/logs?tail=200`))), up ? button("Restart", () => act(s, "restart")) : button("Start", () => act(s, "start")), up ? button("Stop", () => act(s, "stop")) : undefined].filter(Boolean),
+      );
+    }
+    const state = s.load === "not-found" ? "not installed" : s.sub && s.sub !== s.active ? `${s.active} (${s.sub})` : s.active;
+    return h(
+      "tr",
+      {},
+      h("td", {}, h("div", { class: "mount-name" }, s.unit), h("div", { class: "mount-dev" }, s.description)),
+      h("td", {}, h("span", { class: "state", "data-level": s.load === "not-found" ? "idle" : activeLevel(s.active) }, state)),
+      h("td", { class: "num" }, s.pid ? String(s.pid) : "-"),
+      actions,
+    );
+  }
+
+  async function load() {
+    try {
+      const d = await get("/services");
+      if (!alive) return;
+      message.textContent = d.services.length === 0 ? "No services are listed yet. Add a services line to the NodOS config." : "";
+      table.hidden = d.services.length === 0;
+      body.replaceChildren(...d.services.map(row));
+    } catch (err) {
+      if (!alive) return;
+      table.hidden = true;
+      body.replaceChildren();
+      message.textContent = err.status === 401 ? "Your session ended. Sign in again." : explain(err);
+    }
+  }
+
+  async function act(s, verb) {
+    if (busy) return;
+    if (verb !== "start" && !confirm(`${verb === "stop" ? "Stop" : "Restart"} ${s.unit}?`)) return;
+    busy = true;
+    const ing = { start: "Starting", stop: "Stopping", restart: "Restarting" }[verb];
+    say(`${ing} ${s.unit}...`);
+    try {
+      await post(`/services/${encodeURIComponent(s.unit)}/${verb}`);
+      say(`${s.unit} ${{ start: "started", stop: "stopped", restart: "restarted" }[verb]}.`);
+    } catch (err) {
+      say(`Could not ${verb} ${s.unit}: ${explain(err)}`, true);
+    } finally {
+      busy = false;
+      await load();
+    }
+  }
+
+  return {
+    el: h("div", {}, flash, message, table, logs.el),
+    activate() {
+      alive = true;
+      load();
+      timer = setInterval(load, 5000);
+    },
+    deactivate() {
+      alive = false;
+      clearInterval(timer);
+    },
     update() {},
   };
 }
@@ -389,4 +510,4 @@ export function auditView({ role }) {
   };
 }
 
-export const views = { overview: overviewView, storage: storageView, network: networkView, docker: dockerView, audit: auditView };
+export const views = { overview: overviewView, storage: storageView, network: networkView, docker: dockerView, services: serviceView, audit: auditView };

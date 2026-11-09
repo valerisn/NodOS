@@ -28,6 +28,7 @@ data_dir = $NATIVE_DIR/data
 secure_cookies = false
 log_level = debug
 docker_socket = $NATIVE_DIR/docker.sock
+services = ssh
 EOF
 
 # A fake Docker daemon, so the Docker routes are tested end to end on Linux.
@@ -110,6 +111,16 @@ if [ -z "${SMOKE_SKIP_POSIX:-}" ]; then
     [ "$(status -X POST -d '' "${AUTH[@]}" -H "x-csrf-token: $CSRF" "$URL/docker/containers/web/kill")" = "404" ] || fail "docker kill must be 404"
     [ "$(status -X POST -d '' "${AUTH[@]}" -H "x-csrf-token: $CSRF" "$URL/docker/containers/nope/restart")" = "404" ] || fail "docker unknown container"
     [ "$(status -X POST -d '' "${AUTH[@]}" -H "x-csrf-token: $CSRF" "$URL/docker/containers/-rf/restart")" = "400" ] || fail "docker bad ref"
+
+    # Services: status is read-only so it is safe to run for real where systemd
+    # exists. We never start, stop or restart anything real in CI.
+    if command -v systemctl >/dev/null 2>&1; then
+        SVC="$(curl -s "${AUTH[@]}" "$URL/services")"
+        echo "$SVC" | grep -q '"unit":"ssh"' || fail "services list missing ssh: $SVC"
+    fi
+    [ "$(status "$URL/services")" = "401" ] || fail "services without cookie should be 401"
+    [ "$(status -X POST -d '' "${AUTH[@]}" -H "x-csrf-token: $CSRF" "$URL/services/sshd/restart")" = "404" ] || fail "service off the allowlist must be 404"
+    [ "$(status -X POST -d '' "${AUTH[@]}" "$URL/services/ssh/restart")" = "403" ] || fail "service restart without csrf"
 
     [ "$(status "${AUTH[@]}" "$URL/alerts")" = "200" ] || fail "alerts route"
     AUDIT="$(curl -s "${AUTH[@]}" "$URL/audit?limit=20")"

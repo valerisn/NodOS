@@ -17,6 +17,7 @@ line number.
 | `data_dir` | `/var/lib/nodos` | Holds `users.db` and `audit.log`. Created if missing |
 | `log_level` | `info` | `err`, `warn`, `info` or `debug`. Logs go to stderr |
 | `secure_cookies` | `true` | Mark session cookies `Secure`. Set `false` only for plain-HTTP LANs |
+| `services` | empty | Comma separated systemd units NodOS may show and control, without `.service`. Empty turns the feature off |
 | `docker_socket` | `/var/run/docker.sock` | Docker Engine socket, or `off`. See the warning below |
 | `sample_interval_ms` | `2000` | Metrics sampling interval, 500 to 60000. Unused until Phase 3 |
 
@@ -37,6 +38,35 @@ on POSIX). Restart the server to pick up new users.
 On Windows PowerShell 5.1, piping text into a native program can change its
 encoding. Redirect from a UTF-8 file with `cmd /c "nodos user add alice < pw.txt"`
 instead.
+
+## Services access
+
+```
+services = ssh, nginx, postgresql
+```
+
+This is an allowlist, not a pattern. Only these units can be shown, read logs
+for, or controlled, and each name must be letters, digits and `_ . - @ :`,
+starting with a letter or digit (so a typo can never become a command line
+option). Everyone signed in sees status; admins read logs and start, stop and
+restart, with every action audited.
+
+Control needs OS permission because NodOS runs as an unprivileged user. Grant
+it per unit with a polkit rule instead of running NodOS as root:
+
+```js
+// /etc/polkit-1/rules.d/50-nodos.rules
+polkit.addRule(function(action, subject) {
+    if (action.id == "org.freedesktop.systemd1.manage-units" &&
+        subject.user == "nodos" &&
+        ["nginx.service", "postgresql.service"].indexOf(action.lookup("unit")) >= 0) {
+        return polkit.Result.YES;
+    }
+});
+```
+
+List only the units you want controllable. Status and logs work without it;
+the user needs to be in the `systemd-journal` group to read journal logs.
 
 ## Docker access
 

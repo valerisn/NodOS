@@ -30,7 +30,7 @@ runtime dependencies.
 - CPU, memory, disk, network and temperature monitoring with live graphs
 - Storage and filesystem overview
 - Docker: containers, logs, start, stop, restart (admin only, audited)
-- systemd service status, control and logs
+- systemd service status, control and logs for an allowlist of units
 - Notifications for failures, high usage and low disk space
 - Authentication, sessions and an audit log from the start
 

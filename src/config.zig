@@ -2,6 +2,7 @@
 //! Not TOML and not ZON on purpose: nobody should need a spec to edit a
 //! five line file, and the error messages here carry the line number.
 const std = @import("std");
+const systemd = @import("integrations/systemd.zig");
 
 pub const LogLevel = enum { err, warn, info, debug };
 
@@ -17,6 +18,9 @@ pub const Config = struct {
     /// Docker Engine socket, or "off". Socket access is root-equivalent, so
     /// an admin who doesn't want NodOS to hold that power can switch it off.
     docker_socket: []const u8 = "/var/run/docker.sock",
+    /// systemd units NodOS may show and control, without ".service". Empty
+    /// means the services feature is off. An allowlist, never a pattern.
+    services: []const []const u8 = &.{},
     /// How often the sampler runs. Below 500 ms the CPU cost stops being funny.
     sample_interval_ms: u32 = 2000,
 };
@@ -58,6 +62,17 @@ pub fn parse(arena: std.mem.Allocator, text: []const u8, diag: *Diagnostic) Pars
         } else if (std.mem.eql(u8, key, "log_level")) {
             cfg.log_level = std.meta.stringToEnum(LogLevel, value) orelse
                 return fail(diag, line_no, "log_level must be err, warn, info or debug");
+        } else if (std.mem.eql(u8, key, "services")) {
+            var list: std.ArrayList([]const u8) = .empty;
+            var parts = std.mem.splitScalar(u8, value, ',');
+            while (parts.next()) |p| {
+                const name = std.mem.trim(u8, p, " \t");
+                if (name.len == 0) continue;
+                if (!systemd.validUnit(name)) return fail(diag, line_no, "services: invalid unit name (letters, digits, _ . - @ :, no leading dash)");
+                if (list.items.len >= systemd.max_units) return fail(diag, line_no, "services: at most 32 units");
+                try list.append(arena, try arena.dupe(u8, name));
+            }
+            cfg.services = list.items;
         } else if (std.mem.eql(u8, key, "docker_socket")) {
             cfg.docker_socket = try arena.dupe(u8, value);
         } else if (std.mem.eql(u8, key, "secure_cookies")) {
@@ -113,6 +128,18 @@ test "parses all keys" {
     try std.testing.expectEqualStrings("/tmp/nodos", cfg.data_dir);
     try std.testing.expectEqual(LogLevel.debug, cfg.log_level);
     try std.testing.expectEqual(@as(u32, 1000), cfg.sample_interval_ms);
+}
+
+test "services list parses and rejects option-looking names" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var d: Diagnostic = .{};
+    const cfg = try parse(arena.allocator(), "services = ssh, nginx ,avahi-daemon,,\n", &d);
+    try std.testing.expectEqual(@as(usize, 3), cfg.services.len);
+    try std.testing.expectEqualStrings("nginx", cfg.services[1]);
+    try std.testing.expectError(error.InvalidConfig, parse(arena.allocator(), "services = ssh, --now", &d));
+    try std.testing.expectError(error.InvalidConfig, parse(arena.allocator(), "services = a b", &d));
+    try std.testing.expectEqual(@as(usize, 0), (try parse(arena.allocator(), "", &d)).services.len);
 }
 
 test "errors carry line numbers" {

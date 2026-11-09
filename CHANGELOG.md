@@ -20,6 +20,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   storage and network pages. Light and dark themes.
 - Alerts for CPU, memory, swap, disk and temperature with hysteresis, shown in the dashboard and written to the audit log.
 - Audit log viewer for admins at `/api/v1/audit` and in the dashboard.
+- systemd services: status, logs, start, stop, restart for an allowlist of units from the config.
 - Docker: container list, logs, start, stop and restart, admin-gated, CSRF-protected and audited.
 - Idle and stalled connections are closed after 15 seconds.
 - Graceful shutdown on SIGINT and SIGTERM (Linux).
