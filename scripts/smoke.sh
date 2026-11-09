@@ -70,7 +70,14 @@ if [ -z "${SMOKE_SKIP_POSIX:-}" ]; then
     echo "$SYS" | grep -Eq '"cores":\[[0-9.]+' || fail "system: no cpu cores: $SYS"
     HIST="$(curl -s -H "Cookie: nodos_session=$TOKEN" "$URL/history")"
     echo "$HIST" | grep -Eq '"ts":\[[0-9]+' || fail "history empty after sampling: $HIST"
+
+    # Live stream: ~6 s at a 2 s interval should deliver at least two events.
+    # curl exits 28 on --max-time, which is the expected way this ends.
+    STREAM="$(curl -s -N --max-time 6 -H "Cookie: nodos_session=$TOKEN" "$URL/stream" || true)"
+    EVENTS="$(echo "$STREAM" | grep -c '^event: snapshot' || true)"
+    [ "$EVENTS" -ge 2 ] || fail "stream delivered $EVENTS snapshot events, wanted at least 2"
 fi
+[ "$(status "$URL/stream")" = "401" ] || fail "stream without cookie should be 401"
 
 [ "$(status -X POST -d '' -H "Cookie: nodos_session=$TOKEN" "$URL/logout")" = "403" ] || fail "logout without csrf"
 [ "$(status -X POST -d '' -H "Cookie: nodos_session=$TOKEN" -H "x-csrf-token: $CSRF" "$URL/logout")" = "200" ] || fail "logout"

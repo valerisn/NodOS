@@ -289,7 +289,84 @@ pub const LinuxSource = struct {
     }
 };
 
+// ---------------------------------------------------------------- dev source
+
+/// Synthetic host for developing the dashboard and exercising streaming on a
+/// machine with no /proc (Windows, macOS). Only reachable via
+/// `zig build -Dfake-host=true`. Never enabled in release builds.
+pub const FakeSource = struct {
+    tick: u64 = 0,
+    // Cumulative counters, like the real kernel ones: they only ever grow.
+    // Advanced once per sample in temps(), which the collector calls last.
+    busy: u64 = 0,
+    idle: u64 = 0,
+    rx: u64 = 0,
+    tx: u64 = 0,
+
+    pub fn read(s: *FakeSource, path: []const u8, buf: []u8) CollectError![]const u8 {
+        const n = s.tick;
+        const eql = std.mem.eql;
+        if (eql(u8, path, "/proc/stat")) {
+            const b = s.busy;
+            const i = s.idle;
+            // Cores are fixed multiples of the total so they stay monotonic too.
+            return std.fmt.bufPrint(buf, "cpu  {d} 0 0 {d} 0 0 0 0\ncpu0 {d} 0 0 {d} 0 0 0 0\ncpu1 {d} 0 0 {d} 0 0 0 0\ncpu2 {d} 0 0 {d} 0 0 0 0\ncpu3 {d} 0 0 {d} 0 0 0 0\n", .{
+                b * 4, i * 4, b / 2, i, b * 3 / 2, i, b, i, b * 2 / 3, i,
+            }) catch error.Unreadable;
+        }
+        if (eql(u8, path, "/proc/meminfo")) {
+            const avail = 9_000_000 - (n * 7919) % 2_000_000;
+            return std.fmt.bufPrint(buf, "MemTotal: 16318244 kB\nMemFree: 1000000 kB\nMemAvailable: {d} kB\nBuffers: 200000 kB\nCached: 4000000 kB\nSwapTotal: 2097148 kB\nSwapFree: 2090000 kB\n", .{avail}) catch error.Unreadable;
+        }
+        if (eql(u8, path, "/proc/net/dev")) {
+            return std.fmt.bufPrint(buf, "h\nh\n    lo: 5000 50 0 0 0 0 0 0 5000 50 0 0 0 0 0 0\n  eth0: {d} {d} 0 0 0 0 0 0 {d} {d} 0 0 0 0 0 0\n", .{ s.rx, s.rx / 1400, s.tx, s.tx / 1400 }) catch error.Unreadable;
+        }
+        if (eql(u8, path, "/proc/uptime")) return std.fmt.bufPrint(buf, "{d}.00 0.00\n", .{86_400 * 12 + n * 2}) catch error.Unreadable;
+        if (eql(u8, path, "/proc/loadavg")) return "0.62 0.48 0.41 2/311 4242\n";
+        if (eql(u8, path, "/proc/mounts")) return "/dev/nvme0n1p2 / ext4 rw 0 0\n/dev/sda1 /mnt/media xfs rw 0 0\n/dev/sdb1 /mnt/backup btrfs rw 0 0\n";
+        if (eql(u8, path, "/proc/sys/kernel/hostname")) return "devbox\n";
+        if (eql(u8, path, "/proc/sys/kernel/osrelease")) return "6.8.0-fake\n";
+        if (eql(u8, path, "/etc/os-release")) return "PRETTY_NAME=\"Fake Linux (dev)\"\n";
+        return error.Unreadable;
+    }
+
+    pub fn fsUsage(_: *FakeSource, path: []const u8) ?FsUsage {
+        const gb: u64 = 1 << 30;
+        if (std.mem.eql(u8, path, "/")) return .{ .total_bytes = 500 * gb, .free_bytes = 310 * gb, .avail_bytes = 290 * gb };
+        if (std.mem.eql(u8, path, "/mnt/media")) return .{ .total_bytes = 8000 * gb, .free_bytes = 1200 * gb, .avail_bytes = 1200 * gb };
+        return .{ .total_bytes = 4000 * gb, .free_bytes = 3700 * gb, .avail_bytes = 3700 * gb };
+    }
+
+    pub fn temps(s: *FakeSource, out: *[max_temps]Temp) u8 {
+        out[0] = .{ .celsius = 44.0 + @as(f32, @floatFromInt(s.tick % 9)) };
+        out[0].label.set("cpu");
+        out[1] = .{ .celsius = 36.5 };
+        out[1].label.set("nvme");
+        // Busy share wanders between ~15% and ~75% so the graph moves.
+        const pct = 15 + (s.tick * 13) % 60;
+        s.busy += pct;
+        s.idle += 100 - pct;
+        s.rx += 400_000 + (s.tick * 37_000) % 900_000;
+        s.tx += 90_000 + (s.tick * 11_000) % 300_000;
+        s.tick += 1;
+        return 2;
+    }
+};
+
 // ---------------------------------------------------------------- tests
+
+test "fake source never panics or goes backwards over a long run" {
+    var c: Collector(FakeSource) = .{ .source = .{} };
+    var prev_rx: u64 = 0;
+    var i: i64 = 0;
+    while (i < 2000) : (i += 1) {
+        const s = try c.sample(1000 + i * 2000, 1_700_000_000 + i * 2);
+        try std.testing.expect(s.cpu_pct >= 0 and s.cpu_pct <= 100);
+        const rx = s.ifaces[1].rx_bytes;
+        try std.testing.expect(rx >= prev_rx);
+        prev_rx = rx;
+    }
+}
 
 const FixtureSource = struct {
     stat: []const u8,

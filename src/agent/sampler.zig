@@ -4,6 +4,7 @@
 const std = @import("std");
 const Io = std.Io;
 const collect = @import("collect.zig");
+const build_options = @import("build_options");
 const Snapshot = collect.Snapshot;
 
 /// 300 points at the default 2 s interval is ten minutes of graph.
@@ -73,8 +74,10 @@ pub const Sampler = struct {
 
     /// Runs until cancelled. Returns early on a platform we can't read.
     pub fn run(s: *Sampler, io: Io, interval_ms: u32) Io.Cancelable!void {
-        var c: collect.Collector(collect.LinuxSource) = .{ .source = .{ .io = io } };
+        const Source = if (build_options.fake_host) collect.FakeSource else collect.LinuxSource;
+        var c: collect.Collector(Source) = .{ .source = if (build_options.fake_host) .{} else .{ .io = io } };
         const log = std.log.scoped(.sampler);
+        if (build_options.fake_host) log.warn("fake-host build: serving synthetic data, not real metrics", .{});
         var failing = false;
         while (true) {
             const now_ms = Io.Timestamp.now(io, .awake).toMilliseconds();

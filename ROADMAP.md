@@ -31,7 +31,7 @@ implemented and tested.
 - [x] Parsers for `/proc/stat`, `/proc/meminfo`, `/proc/net/dev`, `/proc/uptime`, mounts (unit tested on fixtures)
 - [x] Mounts, filesystem usage (statfs), thermal zones (compiles for Linux; real-host test runs in CI)
 - [x] Sampler with in-memory history
-- [ ] SSE live stream
+- [x] SSE live stream (verified end to end with the synthetic host; real-host run in CI)
 
 ## Phase 4: Dashboard
 

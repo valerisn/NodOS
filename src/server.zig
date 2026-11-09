@@ -34,6 +34,7 @@ pub const App = struct {
     sessions: auth.SessionStore = .{},
     limiter: ratelimit.Limiter = .{},
     sampler: sampler_mod.Sampler = .{},
+    streams: std.atomic.Value(u32) = .init(0),
     /// Null in tests.
     audit_log: ?audit.Log = null,
     /// A real hash of a throwaway password, verified against when the
@@ -416,6 +417,11 @@ fn serveConnection(io: Io, app: *App, pool: *Pool, slot: *Slot, stream: Io.net.S
         @memcpy(path_buf[0..ctx.path.len], ctx.path);
         ctx.path = path_buf[0..ctx.path.len];
 
+        if (head.method == .GET and std.mem.eql(u8, ctx.path, "/api/v1/stream")) {
+            serveStream(app, io, &req, ctx, slot);
+            return;
+        }
+
         if (!framed) {
             respondSimple(&req, .{ .status = .length_required, .body = "{\"error\":\"length required\"}" }, false) catch return;
             return;
@@ -440,6 +446,72 @@ fn serveConnection(io: Io, app: *App, pool: *Pool, slot: *Slot, stream: Io.net.S
         respondSimple(&req, reply, keep) catch return;
         slot.last_s.store(nowMono(io), .monotonic);
         if (!keep) return;
+    }
+}
+
+/// Cap on simultaneous live streams so a pile of open dashboards can't eat
+/// the whole connection pool.
+const max_streams = 16;
+
+/// One step of the live stream: a snapshot event if the sampler produced a new
+/// one since `last_ts`, otherwise a comment line. The comment keeps proxies
+/// from timing the connection out and keeps our own idle reaper off it.
+fn streamTick(app: *App, io: Io, w: *Io.Writer, last_ts: *i64) !void {
+    if (app.sampler.latestCopy(io)) |snap| {
+        if (snap.ts_s != last_ts.*) {
+            last_ts.* = snap.ts_s;
+            try w.writeAll("event: snapshot\ndata: ");
+            try encode.writeSnapshot(w, &snap);
+            try w.writeAll("\n\n");
+            return;
+        }
+    }
+    try w.writeAll(": ping\n\n");
+}
+
+/// Server-Sent Events. One-way push is all the dashboard needs (see D5 in the
+/// decision records). Ends when the client goes away, the session dies, or
+/// the server shuts down.
+fn serveStream(app: *App, io: Io, req: *http.Server.Request, ctx: Ctx, slot: *Slot) void {
+    const sess_token = ctx.cookie_token orelse {
+        respondSimple(req, err_unauth, false) catch {};
+        return;
+    };
+    if (app.sessions.lookup(io, &sess_token, ctx.now_s) == null) {
+        respondSimple(req, err_unauth, false) catch {};
+        return;
+    }
+    if (app.sampler.isUnsupported(io)) {
+        respondSimple(req, err_unavailable, false) catch {};
+        return;
+    }
+    if (app.streams.fetchAdd(1, .acq_rel) >= max_streams) {
+        _ = app.streams.fetchSub(1, .acq_rel);
+        respondSimple(req, .{ .status = .service_unavailable, .body = "{\"error\":\"too many live streams\"}" }, false) catch {};
+        return;
+    }
+    defer _ = app.streams.fetchSub(1, .acq_rel);
+
+    var hdrs: [security_headers.len + 1]http.Header = undefined;
+    @memcpy(hdrs[0..security_headers.len], &security_headers);
+    hdrs[security_headers.len] = .{ .name = "content-type", .value = "text/event-stream" };
+    var out_buf: [4096]u8 = undefined;
+    var bw = req.respondStreaming(&out_buf, .{
+        .respond_options = .{ .extra_headers = &hdrs, .keep_alive = false },
+    }) catch return;
+
+    var last_ts: i64 = 0;
+    // Tick faster than the idle limit even when sampling is slow.
+    const tick_ms: i64 = @min(app.cfg.sample_interval_ms, 5000);
+    while (true) {
+        const now_s = Io.Timestamp.now(io, .real).toSeconds();
+        // Logout or expiry ends the stream. lookup also counts as activity,
+        // so an open dashboard keeps its session alive up to the 12 h cap.
+        if (app.sessions.lookup(io, &sess_token, now_s) == null) return;
+        streamTick(app, io, &bw.writer, &last_ts) catch return;
+        bw.flush() catch return;
+        slot.last_s.store(nowMono(io), .monotonic);
+        io.sleep(.fromMilliseconds(tick_ms), .awake) catch return;
     }
 }
 
@@ -595,6 +667,38 @@ test "system and history need a session and real data" {
     // wrong method
     ctx.method = .POST;
     try std.testing.expectEqual(http.Status.method_not_allowed, dispatch(&app, io, ctx, "", &s).status);
+}
+
+test "stream tick emits a snapshot once, then pings" {
+    const io = std.testing.io;
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var app = try testApp(arena.allocator());
+    defer app.deinit(io);
+
+    var out: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    var last: i64 = 0;
+
+    // No sample yet: just a keepalive.
+    try streamTick(&app, io, &out.writer, &last);
+    try std.testing.expectEqualStrings(": ping\n\n", out.written());
+
+    var snap: @import("agent/collect.zig").Snapshot = .{ .ts_s = 77 };
+    snap.hostname.set("streambox");
+    app.sampler.ingest(io, snap);
+    out.clearRetainingCapacity();
+    try streamTick(&app, io, &out.writer, &last);
+    try std.testing.expect(std.mem.startsWith(u8, out.written(), "event: snapshot\ndata: {"));
+    try std.testing.expect(std.mem.endsWith(u8, out.written(), "}\n\n"));
+    try std.testing.expect(std.mem.find(u8, out.written(), "streambox") != null);
+    // exactly one data line: SSE data must not contain raw newlines
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, out.written(), "\ndata: "));
+
+    // same timestamp again: no duplicate event
+    out.clearRetainingCapacity();
+    try streamTick(&app, io, &out.writer, &last);
+    try std.testing.expectEqualStrings(": ping\n\n", out.written());
 }
 
 test "lockout after repeated failures" {

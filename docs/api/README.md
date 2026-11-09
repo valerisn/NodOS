@@ -82,6 +82,23 @@ interval), oldest first, as parallel arrays:
 `rx_bps` and `tx_bps` sum all interfaces except `lo`. History is in memory only
 and resets when the server restarts.
 
+### `GET /api/v1/stream`
+
+Requires a session. A Server-Sent Events stream (`text/event-stream`). Each
+new sample arrives as one event, the same JSON as `/system`:
+
+```
+event: snapshot
+data: {"ts":1794216317,"hostname":"homebox", ...}
+
+```
+
+Between samples the server sends `: ping` comment lines (at least every 5
+seconds) so proxies keep the connection open. The stream ends when the client
+disconnects, the session expires or is logged out, or the server stops. At most
+16 streams run at once; more get 503. Browsers reconnect automatically with
+`EventSource`, which sends the session cookie, so no token handling is needed.
+
 ## Errors
 
 Errors are `{"error": "message"}` with a matching HTTP status. A `POST` with no

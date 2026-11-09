@@ -9,6 +9,9 @@ pub fn build(b: *std.Build) void {
     // it anywhere else or the release workflow will lie to people.
     const opts = b.addOptions();
     opts.addOption([]const u8, "version", zon.version);
+    // Dev only: synthetic host data so the dashboard can be built on a box
+    // with no /proc. Defaults off; CI and release builds never set it.
+    opts.addOption(bool, "fake_host", b.option(bool, "fake-host", "Serve synthetic host data (development only)") orelse false);
 
     const mod = b.addModule("nodos", .{
         .root_source_file = b.path("src/root.zig"),
