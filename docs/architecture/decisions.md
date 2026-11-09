@@ -74,17 +74,27 @@ client crash the process. `server.zig` guards against it and answers 411.
 Expect more edges like this. Fuzz the request path before release. There are
 also no read timeouts yet (see the TODO in `server.zig`).
 
+## Resolved from the early open list
+
+- **HTTP server**: `std.http.Server`, D8.
+- **TLS**: reverse proxy, D9.
+- **Password hashing**: argon2id from `std.crypto.pwhash`, OWASP minimum
+  parameters (19 MiB, t=2, p=1), stored as PHC strings so they can be raised later.
+- **Storage format**: flat files, see the architecture overview.
+- **Privileged action path**: polkit, see the architecture overview.
+- **Live stream under load**: 16 concurrent streams measured at about 8 MB RSS
+  on Linux, see `docs/development/performance.md`.
+
 ## Open decisions
 
-- **SSE under load**: still unmeasured. Many idle streaming connections need a
-  test before the live stream ships.
-- **TLS**: terminate in NodOS (std.crypto.tls server support is limited) or
-  require a reverse proxy. Leaning toward documented reverse-proxy deployment
-  plus optional certificate loading if the standard library can do it safely.
-- **Password hashing**: `std.crypto.pwhash` provides argon2id and scrypt.
-  Leaning argon2id with documented parameters.
-- **Storage format**: flat files versus embedded SQLite. See overview.
-- **Privileged action path**: polkit versus helper process. See overview.
+- **Outbound notifications** (email, webhook): alerts are in-app only. An
+  outbound HTTP client means TLS client code and a place to store secrets. Not
+  decided; probably a webhook first, behind its own config, off by default.
+- **Multiple servers**: the Agent is a module today. A remote agent needs an
+  authenticated channel that does not exist yet.
+- **Settings and user management in the browser**: users are CLI-only today.
+  Doing it in the web UI means a writable user store inside the network-facing
+  process, which is a trade-off, not an oversight.
 
 ## D9. TLS: reverse proxy, not built in
 

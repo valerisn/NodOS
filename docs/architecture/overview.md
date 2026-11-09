@@ -71,23 +71,29 @@ not roadmap items. Windows is a development host only.
 
 ## Data and persistence
 
-Phase 2 decides the storage format. The constraint: no C dependency for a
-database unless flat files prove inadequate. Expected data is small: a user
-table, sessions, an append-only audit log, notification rules. Metrics history
-stays in memory and is intentionally lost on restart in early releases.
+Flat files, no database. `users.db` is one line per user, rewritten atomically
+(write to a temporary file, then rename) with mode 0600. `audit.log` is
+append-only JSON lines. Sessions, metric history, rate-limit state and active
+alerts live in memory and are intentionally lost on restart. The data is small
+enough that a database would add a C dependency and a failure mode for no
+benefit; revisit if user counts or audit volume ever make that false.
 
-## Privilege separation (pre-1.0 requirement)
+## Privilege separation
 
-Running a web server as root is not acceptable. The plan:
+Running a web server as root is not acceptable, so it doesn't. What is built:
 
-1. `nodos serve` runs as an unprivileged `nodos` user.
-2. Privileged actions (service start/stop, for example) go through a narrow
-   path: either polkit rules scoped to named units, or a small helper process
-   that accepts a fixed enum of operations over a Unix socket.
-3. Docker access is gated by socket group membership. The docs must say plainly
-   that docker socket access is root-equivalent.
+1. `nodos serve` runs as an unprivileged `nodos` user under a hardened systemd
+   unit (no capabilities, `ProtectSystem=strict`, restricted address families,
+   one writable directory). CI installs it that way and checks it still works.
+2. systemd control goes through polkit, not a helper process. The admin lists
+   units in the config (the allowlist NodOS enforces) and writes a polkit rule
+   naming the same units (the permission the OS enforces). Two independent
+   gates, each narrower than "all services".
+3. Docker access is the `docker` group, opt-in through a drop-in, off with
+   `docker_socket = off`. The docs say plainly that it is root-equivalent.
 
-The exact mechanism is an open decision, tracked in `decisions.md`.
+A helper process with a fixed enum of operations was the alternative; polkit
+won because it adds no code that runs as root and the OS already audits it.
 
 ## Performance budget
 

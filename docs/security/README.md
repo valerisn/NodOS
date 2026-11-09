@@ -72,8 +72,9 @@ These are real. None is hidden elsewhere.
     users are locked out. Put rate limiting in the reverse proxy. On Windows
     (development only) the cutoff does not free slots until the client lets go.
 11. **The standard library is young.** `std.http.Server` crashed on one class of
-    input (fixed with a guard). More such edges are likely. The request path
-    has not been fuzzed.
+    input (fixed with a guard). More such edges are likely. Parsers and the
+    login path get mutation tests on every build, but there has been no long
+    fuzzing campaign.
 12. **No independent review or penetration test has been done.**
 
 ## Self-review checklist (2026-11-09)

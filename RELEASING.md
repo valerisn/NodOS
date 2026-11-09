@@ -1,0 +1,40 @@
+# Cutting a release
+
+The pipeline is tested. A manual run of the Release workflow does everything
+except publish, so rehearse before tagging.
+
+## Rehearse
+
+```sh
+gh workflow run release.yml --ref main
+gh run watch
+gh run download <run-id> -n nodos-release-files -D /tmp/nodos-release
+sha256sum -c /tmp/nodos-release/SHA256SUMS   # run inside that directory
+```
+
+Check the tarball has the binary, `scripts/install.sh`, `packaging/` and the
+docs, and that `nodos version` prints the version you expect.
+
+## Release
+
+1. Be on `main` with a green CI run.
+2. Set the version in `build.zig.zon` (drop `-dev`), for example `0.1.0`.
+3. Move the `[Unreleased]` entries in `CHANGELOG.md` under a dated `[0.1.0]`
+   heading and open a fresh empty `[Unreleased]`.
+4. Commit: `Release 0.1.0`.
+5. Tag and push: `git tag v0.1.0 && git push origin main v0.1.0`.
+
+The tag must equal `v` plus the version in `build.zig.zon`; the workflow
+refuses to publish a mismatch. It builds and tests, packages both Linux
+targets, checks the binary reports the right version, and creates the GitHub
+release with generated notes and `SHA256SUMS`.
+
+6. Afterwards, bump `build.zig.zon` to the next `-dev` version.
+7. Add the real release badge to the README.
+
+## Before the first public release
+
+The honest list is in [ROADMAP.md](ROADMAP.md). The ones that matter most: run
+it on a real home server for a while, run a long fuzzing campaign, and get an
+independent look at the security model in `docs/security/README.md`. Releases
+are not signed yet; the checksums only guard against corruption.

@@ -9,11 +9,11 @@ implemented and tested.
 - [x] Zig 0.17 build system, `nodos version` and `nodos help`
 - [x] Architecture and decision records
 - [x] CI: format, build, test, cross-compile (first run green)
-- [ ] Release workflow (written, never run; first tag will be its test)
+- [x] Release workflow: dry run verified in CI (artifacts, checksums, installer included); the publish step runs for the first time on the first tag
 - [x] Issue and pull request templates
 - [x] Contribution, conduct and security policies
 
-## Phase 2: Core (in progress)
+## Phase 2: Core (done)
 
 - [x] Config file loading and validation
 - [x] Logging (stderr, runtime level)
@@ -21,31 +21,33 @@ implemented and tested.
 - [x] Authentication: argon2id passwords, server-side sessions, CSRF, login rate limiting
 - [x] Audit log for logins and logouts
 - [x] Idle connection reaper (slowloris), verified with stalled sockets
-- [ ] Graceful shutdown on SIGINT and SIGTERM (written, compiles for Linux, awaiting first CI smoke run)
+- [x] Graceful shutdown on SIGINT and SIGTERM (Linux), checked by the CI smoke test
 - [x] TLS decision: reverse proxy, documented with Caddy and nginx examples (D9)
 - [x] Trusted proxy setting for client addresses (rightmost X-Forwarded-For from a named proxy; tested live)
 - [x] Hostile-input tests for every parser and the login path run on every build (src/robustness.zig); a long `--fuzz` campaign is still open
 
-## Phase 3: Monitoring (in progress)
+## Phase 3: Monitoring (done)
 
 - [x] Parsers for `/proc/stat`, `/proc/meminfo`, `/proc/net/dev`, `/proc/uptime`, mounts (unit tested on fixtures)
-- [x] Mounts, filesystem usage (statfs), thermal zones (compiles for Linux; real-host test runs in CI)
+- [x] Mounts, filesystem usage (statfs), thermal zones, verified against a real Linux host in CI
 - [x] Sampler with in-memory history
-- [x] SSE live stream (verified end to end with the synthetic host; real-host run in CI)
+- [x] SSE live stream, verified end to end on Linux in CI
 
 ## Phase 4: Dashboard (in progress)
 
 - [x] Layout, navigation, login (embedded in the binary, no build step)
 - [x] Overview page with live strip charts
 - [x] Storage and network pages
-- [ ] Settings
+- [ ] Settings page (not built: accounts are managed with the `nodos user` commands, see decisions)
 
 ## Phase 5: Management (in progress)
 
-- [x] Docker: list, start, stop, restart, logs (stats still to do). Verified against a fake daemon on a real socket; real-daemon run is the smoke test in CI
+- [x] Docker: list, start, stop, restart, logs, with a request timeout. Verified against fake daemons on real sockets, including one that never answers
+- [ ] Docker: container stats and images
 - [x] systemd services: status, start, stop, logs, allowlisted per unit (parsers tested; real-systemd status check in CI smoke test)
 - [x] Alerts: threshold rules with hysteresis, audit-logged, live in the dashboard (in-app only; outbound webhooks and email are not built)
 - [x] Audit log viewer (admin)
+- [ ] Outbound notifications (email or webhook)
 
 ## Phase 6: Release (in progress)
 
@@ -63,11 +65,14 @@ widgets, plugins.
 
 1. **Zig churn.** The standard library changes between releases and 0.17 is
    recent. Mitigation: pin the version, keep OS-facing code in small modules.
-2. **HTTP and TLS in std.** Server-side maturity is unproven for this use.
-   Mitigation: Phase 2 starts with a measured spike, and TLS can fall back to a
-   reverse proxy.
-3. **Privileged operations.** Service control and Docker are root-equivalent.
-   Mitigation: privilege separation design is a release blocker (see overview).
+2. **HTTP in std.** `std.http.Server` crashed on one class of input and was
+   guarded; more edges are likely. Mitigation: hostile-input tests on every
+   build, a CI flood test, and a documented reverse proxy in front. TLS is the
+   proxy's job.
+3. **Privileged operations.** Docker is root-equivalent. Mitigation: opt-in,
+   admin-only, three verbs, audited, can be switched off; systemd control is
+   limited by both a config allowlist and a polkit rule (see the architecture
+   overview). Residual risk is documented, not removed.
 4. **Scope.** The feature list is large. Mitigation: monitoring and Docker must
    be excellent before anything on the "Later" list starts.
 5. **Linux-only collectors.** Other platforms get a compiling binary and no
