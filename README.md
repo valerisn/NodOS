@@ -7,6 +7,7 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/valerisn/NodOS/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/valerisn/NodOS/actions/workflows/ci.yml/badge.svg"></a>
   <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue">
   <img alt="Zig 0.17.0" src="https://img.shields.io/badge/zig-0.17.0-f7a41d">
   <img alt="Status: pre-alpha" src="https://img.shields.io/badge/status-pre--alpha-orange">
@@ -14,8 +15,8 @@
 
 > **Status: pre-alpha.** The project foundation, build system and architecture
 > are in place. Monitoring, the API and the dashboard are not built yet. See the
-> [roadmap](ROADMAP.md) for what exists. Release, build status and download
-> badges will be added once the first release and CI run exist.
+> [roadmap](ROADMAP.md) for what exists. Release and download badges will be
+> added once the first release exists.
 
 ## What NodOS is
 
@@ -55,8 +56,8 @@ implemented there.
 ## Build from source
 
 ```sh
-git clone <repository-url> nodos
-cd nodos
+git clone https://github.com/valerisn/NodOS.git
+cd NodOS
 zig build
 ./zig-out/bin/nodos version
 ```
