@@ -23,9 +23,6 @@ const max_body = 1024;
 const cookie_name = "nodos_session";
 const csrf_header = "x-csrf-token";
 
-// TODO: no read timeouts yet, so a client that opens a socket and goes quiet
-// holds a slot forever. Fix before this faces anything but a trusted LAN.
-
 pub const App = struct {
     gpa: std.mem.Allocator,
     cfg: config.Config,
@@ -231,6 +228,72 @@ const security_headers = [_]http.Header{
     .{ .name = "content-security-policy", .value = "default-src 'self'; frame-ancestors 'none'" },
 };
 
+/// A connection that completes no request (and sends no complete head) for
+/// this long is cut. This is the slowloris defense: without it, 256 silent
+/// sockets would lock every real user out.
+const idle_limit_s = 15;
+
+/// One entry per allowed connection. The mutex exists so the reaper can never
+/// shut down a descriptor number that was already closed and handed to a new
+/// client: close and shutdown both happen under the slot lock.
+const Slot = struct {
+    mutex: Io.Mutex = .init,
+    in_use: bool = false,
+    stream: Io.net.Stream = undefined,
+    last_s: std.atomic.Value(i64) = .init(0),
+};
+
+const Pool = struct {
+    slots: []Slot,
+
+    fn acquire(p: *Pool, io: Io, stream: Io.net.Stream) ?*Slot {
+        for (p.slots) |*s| {
+            s.mutex.lockUncancelable(io);
+            defer s.mutex.unlock(io);
+            if (!s.in_use) {
+                s.in_use = true;
+                s.stream = stream;
+                s.last_s.store(nowMono(io), .monotonic);
+                return s;
+            }
+        }
+        return null;
+    }
+
+    fn release(_: *Pool, io: Io, s: *Slot) void {
+        s.mutex.lockUncancelable(io);
+        defer s.mutex.unlock(io);
+        s.stream.close(io);
+        s.in_use = false;
+    }
+
+    fn reap(p: *Pool, io: Io) void {
+        const now = nowMono(io);
+        for (p.slots) |*s| {
+            s.mutex.lockUncancelable(io);
+            defer s.mutex.unlock(io);
+            if (s.in_use and now - s.last_s.load(.monotonic) >= idle_limit_s) {
+                log.debug("closing idle connection", .{});
+                s.stream.shutdown(io, .both) catch {};
+                // Push the deadline out so we don't shut it down every tick
+                // while the handler task is still unwinding.
+                s.last_s.store(now, .monotonic);
+            }
+        }
+    }
+};
+
+fn nowMono(io: Io) i64 {
+    return Io.Timestamp.now(io, .awake).toSeconds();
+}
+
+fn reaper(io: Io, pool: *Pool) Io.Cancelable!void {
+    while (true) {
+        try io.sleep(.fromSeconds(2), .awake);
+        pool.reap(io);
+    }
+}
+
 pub fn run(io: Io, app: *App) !void {
     const addr = try Io.net.IpAddress.parse(app.cfg.listen, app.cfg.port);
     var listener = try addr.listen(io, .{ .reuse_address = true });
@@ -240,9 +303,14 @@ pub fn run(io: Io, app: *App) !void {
         log.warn("no users exist, create one with: nodos user add <name> --config <file>", .{});
     }
 
+    const slots = try app.gpa.alloc(Slot, max_connections);
+    defer app.gpa.free(slots);
+    for (slots) |*s| s.* = .{};
+    var pool: Pool = .{ .slots = slots };
+
     var group: Io.Group = .init;
     defer group.cancel(io);
-    var active: std.atomic.Value(u32) = .init(0);
+    try group.concurrent(io, reaper, .{ io, &pool });
 
     while (true) {
         const stream = listener.accept(io) catch |err| switch (err) {
@@ -252,23 +320,20 @@ pub fn run(io: Io, app: *App) !void {
                 continue;
             },
         };
-        if (active.fetchAdd(1, .acq_rel) >= max_connections) {
-            _ = active.fetchSub(1, .acq_rel);
+        const slot = pool.acquire(io, stream) orelse {
             stream.close(io);
             log.warn("connection limit reached, dropping client", .{});
             continue;
-        }
-        group.concurrent(io, serveConnection, .{ io, app, stream, &active }) catch {
-            _ = active.fetchSub(1, .acq_rel);
-            stream.close(io);
+        };
+        group.concurrent(io, serveConnection, .{ io, app, &pool, slot, stream }) catch {
+            pool.release(io, slot);
             log.warn("could not start connection task", .{});
         };
     }
 }
 
-fn serveConnection(io: Io, app: *App, stream: Io.net.Stream, active: *std.atomic.Value(u32)) Io.Cancelable!void {
-    defer _ = active.fetchSub(1, .acq_rel);
-    defer stream.close(io);
+fn serveConnection(io: Io, app: *App, pool: *Pool, slot: *Slot, stream: Io.net.Stream) Io.Cancelable!void {
+    defer pool.release(io, slot);
 
     var in_buf: [8192]u8 = undefined;
     var out_buf: [8192]u8 = undefined;
@@ -287,6 +352,7 @@ fn serveConnection(io: Io, app: *App, stream: Io.net.Stream, active: *std.atomic
             return;
         };
 
+        slot.last_s.store(nowMono(io), .monotonic);
         const head = req.head;
         const framed = bodyFramingValid(head.method, head.transfer_encoding, head.content_length);
         const too_big = if (head.content_length) |n| n > max_body else head.transfer_encoding != .none;
@@ -340,6 +406,7 @@ fn serveConnection(io: Io, app: *App, stream: Io.net.Stream, active: *std.atomic
         const reply = dispatch(app, io, ctx, body, &scratch);
         const keep = head.keep_alive;
         respondSimple(&req, reply, keep) catch return;
+        slot.last_s.store(nowMono(io), .monotonic);
         if (!keep) return;
     }
 }
