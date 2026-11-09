@@ -499,10 +499,15 @@ fn serveStream(app: *App, io: Io, req: *http.Server.Request, ctx: Ctx, slot: *Sl
     var hdrs: [security_headers.len + 1]http.Header = undefined;
     @memcpy(hdrs[0..security_headers.len], &security_headers);
     hdrs[security_headers.len] = .{ .name = "content-type", .value = "text/event-stream" };
-    var out_buf: [4096]u8 = undefined;
+    // Sized for the largest snapshot (16 interfaces, 32 mounts) so a whole
+    // event always fits in the buffer and never has to drain mid-write.
+    var out_buf: [24 * 1024]u8 = undefined;
     var bw = req.respondStreaming(&out_buf, .{
         .respond_options = .{ .extra_headers = &hdrs, .keep_alive = false },
-    }) catch return;
+    }) catch |err| {
+        log.debug("stream: respondStreaming failed: {s}", .{@errorName(err)});
+        return;
+    };
 
     var last_ts: i64 = 0;
     // Tick faster than the idle limit even when sampling is slow.
@@ -511,9 +516,18 @@ fn serveStream(app: *App, io: Io, req: *http.Server.Request, ctx: Ctx, slot: *Sl
         const now_s = Io.Timestamp.now(io, .real).toSeconds();
         // Logout or expiry ends the stream. lookup also counts as activity,
         // so an open dashboard keeps its session alive up to the 12 h cap.
-        if (app.sessions.lookup(io, &sess_token, now_s) == null) return;
-        streamTick(app, io, &bw.writer, &last_ts) catch return;
-        bw.flush() catch return;
+        if (app.sessions.lookup(io, &sess_token, now_s) == null) {
+            log.debug("stream: session ended", .{});
+            return;
+        }
+        streamTick(app, io, &bw.writer, &last_ts) catch |err| {
+            log.debug("stream: write failed: {s}", .{@errorName(err)});
+            return;
+        };
+        bw.flush() catch |err| {
+            log.debug("stream: flush failed: {s}", .{@errorName(err)});
+            return;
+        };
         slot.last_s.store(nowMono(io), .monotonic);
         io.sleep(.fromMilliseconds(tick_ms), .awake) catch return;
     }

@@ -319,7 +319,12 @@ pub const FakeSource = struct {
             return std.fmt.bufPrint(buf, "MemTotal: 16318244 kB\nMemFree: 1000000 kB\nMemAvailable: {d} kB\nBuffers: 200000 kB\nCached: 4000000 kB\nSwapTotal: 2097148 kB\nSwapFree: 2090000 kB\n", .{avail}) catch error.Unreadable;
         }
         if (eql(u8, path, "/proc/net/dev")) {
-            return std.fmt.bufPrint(buf, "h\nh\n    lo: 5000 50 0 0 0 0 0 0 5000 50 0 0 0 0 0 0\n  eth0: {d} {d} 0 0 0 0 0 0 {d} {d} 0 0 0 0 0 0\n", .{ s.rx, s.rx / 1400, s.tx, s.tx / 1400 }) catch error.Unreadable;
+            // A docker host has a veth per container, and that is what makes real
+            // snapshots big. Ten of them keeps the fake payload past the
+            // streaming writer's buffer, which is exactly the shape that once
+            // broke the live stream on Linux and not here.
+            const veths = "  veth0: 1 1 0 0 0 0 0 0 1 1 0 0 0 0 0 0\n  veth1: 1 1 0 0 0 0 0 0 1 1 0 0 0 0 0 0\n  veth2: 1 1 0 0 0 0 0 0 1 1 0 0 0 0 0 0\n  veth3: 1 1 0 0 0 0 0 0 1 1 0 0 0 0 0 0\n  veth4: 1 1 0 0 0 0 0 0 1 1 0 0 0 0 0 0\n  veth5: 1 1 0 0 0 0 0 0 1 1 0 0 0 0 0 0\n  veth6: 1 1 0 0 0 0 0 0 1 1 0 0 0 0 0 0\n  veth7: 1 1 0 0 0 0 0 0 1 1 0 0 0 0 0 0\n  veth8: 1 1 0 0 0 0 0 0 1 1 0 0 0 0 0 0\n  veth9: 1 1 0 0 0 0 0 0 1 1 0 0 0 0 0 0\n";
+            return std.fmt.bufPrint(buf, "h\nh\n    lo: 5000 50 0 0 0 0 0 0 5000 50 0 0 0 0 0 0\n  eth0: {d} {d} 0 0 0 0 0 0 {d} {d} 0 0 0 0 0 0\n{s}", .{ s.rx, s.rx / 1400, s.tx, s.tx / 1400, veths }) catch error.Unreadable;
         }
         if (eql(u8, path, "/proc/uptime")) return std.fmt.bufPrint(buf, "{d}.00 0.00\n", .{86_400 * 12 + n * 2}) catch error.Unreadable;
         if (eql(u8, path, "/proc/loadavg")) return "0.62 0.48 0.41 2/311 4242\n";

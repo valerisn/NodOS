@@ -73,9 +73,14 @@ if [ -z "${SMOKE_SKIP_POSIX:-}" ]; then
 
     # Live stream: ~6 s at a 2 s interval should deliver at least two events.
     # curl exits 28 on --max-time, which is the expected way this ends.
-    STREAM="$(curl -s -N --max-time 6 -H "Cookie: nodos_session=$TOKEN" "$URL/stream" || true)"
-    EVENTS="$(echo "$STREAM" | grep -c '^event: snapshot' || true)"
-    [ "$EVENTS" -ge 2 ] || fail "stream delivered $EVENTS snapshot events, wanted at least 2"
+    curl -s -i -N --max-time 6 -H "Cookie: nodos_session=$TOKEN" "$URL/stream" > "$DIR/stream.out" || true
+    EVENTS="$(grep -c '^event: snapshot' "$DIR/stream.out" || true)"
+    if [ "$EVENTS" -lt 2 ]; then
+        echo "--- raw stream response (first 40 lines, 200 cols):" >&2
+        head -n 40 "$DIR/stream.out" | cut -c1-200 >&2
+        echo "--- /system was $(echo "$SYS" | wc -c) bytes" >&2
+        fail "stream delivered $EVENTS snapshot events, wanted at least 2"
+    fi
 fi
 [ "$(status "$URL/stream")" = "401" ] || fail "stream without cookie should be 401"
 
