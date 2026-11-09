@@ -87,6 +87,47 @@ jobs:
           TOKEN=$(echo "$LOGIN" | grep -i '^set-cookie:' | sed -E 's/.*nodos_session=([^;]+).*/\1/')
           sleep 5
           curl -s -H "Cookie: nodos_session=$TOKEN" http://127.0.0.1:8080/api/v1/system | grep -Eq '"total_kb":[1-9]'
+      - name: Measure the running service
+        # Numbers from a shared 2 core GitHub VM: indicative, not a benchmark.
+        # They go to the job summary so docs/development/performance.md can
+        # quote real Linux figures instead of guesses.
+        run: |
+          set -u
+          PID=$(systemctl show -p MainPID --value nodos)
+          rss() { awk '/VmRSS/{print $2}' "/proc/$PID/status"; }
+          ticks() { awk '{print $14+$15}' "/proc/$PID/stat"; }
+          pctl() { sort -n | awk '{a[NR]=$1} END{printf "p50=%.2f ms  p99=%.2f ms  max=%.2f ms (n=%d)", a[int(NR*0.5)]*1000, a[int(NR*0.99)]*1000, a[NR]*1000, NR}'; }
+          LOGIN=$(curl -s -i -d '{"username":"ci","password":"ci install passphrase"}' http://127.0.0.1:8080/api/v1/login)
+          TOKEN=$(echo "$LOGIN" | grep -i '^set-cookie:' | sed -E 's/.*nodos_session=([^;]+).*/\1/')
+          sleep 10
+          IDLE_RSS=$(rss)
+          T1=$(ticks); sleep 10; T2=$(ticks)
+          IDLE_CPU=$(awk -v d=$((T2-T1)) 'BEGIN{printf "%.2f", d/100/10*100}')
+          H=$(for _ in $(seq 1 500); do curl -s -o /dev/null -w '%{time_total}\n' http://127.0.0.1:8080/api/v1/health; done | pctl)
+          S=$(for _ in $(seq 1 500); do curl -s -o /dev/null -w '%{time_total}\n' -H "Cookie: nodos_session=$TOKEN" http://127.0.0.1:8080/api/v1/system; done | pctl)
+          AFTER_RSS=$(rss)
+          # fill the stream cap (16) and watch memory and CPU for 10 s
+          for _ in $(seq 1 16); do curl -s -N --max-time 12 -H "Cookie: nodos_session=$TOKEN" http://127.0.0.1:8080/api/v1/stream >/dev/null & done
+          sleep 3
+          T3=$(ticks); sleep 8; T4=$(ticks)
+          STREAM_RSS=$(rss)
+          STREAM_CPU=$(awk -v d=$((T4-T3)) 'BEGIN{printf "%.2f", d/100/8*100}')
+          wait
+          BIN=$(stat -c %s /usr/local/bin/nodos)
+          {
+            echo "### NodOS on a GitHub Ubuntu runner (shared VM, indicative only)"
+            echo ""
+            echo "| Measure | Value |"
+            echo "| --- | --- |"
+            echo "| Binary size (ReleaseSafe, stripped) | $((BIN/1024)) KB |"
+            echo "| Idle RSS | ${IDLE_RSS} KB |"
+            echo "| Idle CPU (10 s, 2 s sampling) | ${IDLE_CPU} % of one core |"
+            echo "| GET /api/v1/health, new connection each | $H |"
+            echo "| GET /api/v1/system (auth), new connection each | $S |"
+            echo "| RSS after 1000 requests | ${AFTER_RSS} KB |"
+            echo "| RSS with 16 live streams | ${STREAM_RSS} KB |"
+            echo "| CPU with 16 live streams | ${STREAM_CPU} % of one core |"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Stops cleanly
         run: |
           sudo systemctl stop nodos
