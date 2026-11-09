@@ -330,4 +330,63 @@ export function dockerView({ role }) {
   };
 }
 
-export const views = { overview: overviewView, storage: storageView, network: networkView, docker: dockerView };
+// ---------------------------------------------------------------- audit
+
+export function auditView({ role }) {
+  const body = h("tbody");
+  const message = h("p", { class: "muted", role: "status" });
+  const table = h(
+    "table",
+    { hidden: true },
+    h("thead", {}, h("tr", {}, h("th", {}, "Time"), h("th", {}, "Who"), h("th", {}, "Action"), h("th", {}, "Target"), h("th", {}, "Result"), h("th", {}, "From"))),
+    body,
+  );
+  let timer = null;
+  let alive = true;
+
+  async function load() {
+    if (role !== "admin") {
+      message.textContent = "The audit log is visible to administrators only.";
+      return;
+    }
+    try {
+      const d = await get("/audit?limit=150");
+      if (!alive) return;
+      message.textContent = d.entries.length === 0 ? "Nothing recorded yet." : "";
+      table.hidden = d.entries.length === 0;
+      body.replaceChildren(
+        ...d.entries.map((e) =>
+          h(
+            "tr",
+            { class: e.ok ? "" : "bad" },
+            h("td", { class: "when" }, new Date(e.ts * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" })),
+            h("td", {}, e.actor),
+            h("td", {}, e.action),
+            h("td", { class: "mount-dev" }, e.target),
+            h("td", {}, e.ok ? "ok" : "failed"),
+            h("td", { class: "mount-dev" }, e.ip),
+          ),
+        ),
+      );
+    } catch (err) {
+      if (!alive) return;
+      message.textContent = err.status === 401 ? "Your session ended. Sign in again." : "Could not load the audit log: " + err.message;
+    }
+  }
+
+  return {
+    el: h("div", {}, message, table),
+    activate() {
+      alive = true;
+      load();
+      timer = setInterval(load, 10000);
+    },
+    deactivate() {
+      alive = false;
+      clearInterval(timer);
+    },
+    update() {},
+  };
+}
+
+export const views = { overview: overviewView, storage: storageView, network: networkView, docker: dockerView, audit: auditView };

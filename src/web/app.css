@@ -153,6 +153,20 @@ button.quiet:hover { color: var(--text); border-color: var(--muted); }
   font-size: 14px;
 }
 
+.alerts { list-style: none; margin: 0 var(--gutter) 10px; padding: 0; display: grid; gap: 6px; }
+.alerts li {
+  padding: 8px 12px;
+  border-left: 3px solid var(--warn);
+  background: var(--bg-raise);
+  font-size: 14px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 14px;
+}
+.alerts li[data-level="crit"] { border-left-color: var(--crit); }
+.alerts b { font-weight: 600; }
+.alerts .when { color: var(--muted); }
+
 .view { padding: 0 var(--gutter) 56px; }
 
 /* ---- channels: the overview's one signature element ---- */
@@ -211,6 +225,10 @@ th.num, td.num { text-align: right; padding-right: 0; padding-left: 14px; }
 .usage { min-width: 180px; }
 .usage .bar { margin-top: 6px; }
 .empty { color: var(--muted); padding: 28px 0; }
+
+tr.bad td { color: var(--crit); }
+tr.bad td.mount-dev { color: var(--crit); opacity: 0.8; }
+td.when { white-space: nowrap; color: var(--muted); }
 
 /* ---- docker ---- */
 .state::before {

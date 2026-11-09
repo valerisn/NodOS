@@ -44,8 +44,8 @@ implemented and tested.
 
 - [x] Docker: list, start, stop, restart, logs (stats still to do). Verified against a fake daemon on a real socket; real-daemon run is the smoke test in CI
 - [ ] systemd services: status, start, stop, logs
-- [ ] Notifications and thresholds
-- [ ] Audit log viewer
+- [x] Alerts: threshold rules with hysteresis, audit-logged, live in the dashboard (in-app only; outbound webhooks and email are not built)
+- [x] Audit log viewer (admin)
 
 ## Phase 6: Release
 

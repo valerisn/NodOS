@@ -111,6 +111,11 @@ if [ -z "${SMOKE_SKIP_POSIX:-}" ]; then
     [ "$(status -X POST -d '' "${AUTH[@]}" -H "x-csrf-token: $CSRF" "$URL/docker/containers/nope/restart")" = "404" ] || fail "docker unknown container"
     [ "$(status -X POST -d '' "${AUTH[@]}" -H "x-csrf-token: $CSRF" "$URL/docker/containers/-rf/restart")" = "400" ] || fail "docker bad ref"
 
+    [ "$(status "${AUTH[@]}" "$URL/alerts")" = "200" ] || fail "alerts route"
+    AUDIT="$(curl -s "${AUTH[@]}" "$URL/audit?limit=20")"
+    echo "$AUDIT" | grep -q '"action":"auth.login"' || fail "audit route missing login: $AUDIT"
+    [ "$(status "$URL/audit")" = "401" ] || fail "audit without cookie should be 401"
+
     grep -q 'POST /containers/web/restart' "$DIR/docker-requests.log" || fail "restart never reached docker"
     # the dangerous things must never have been sent
     if grep -Eq 'kill|DELETE|/rm|exec|-rf' "$DIR/docker-requests.log"; then fail "unexpected request reached docker: $(cat "$DIR/docker-requests.log")"; fi

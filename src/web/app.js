@@ -22,6 +22,7 @@ function showLogin() {
   current = null;
   setCsrf("");
   $("app").hidden = true;
+  renderAlerts([]);
   $("login").hidden = false;
   $("password").value = "";
   $("username").focus();
@@ -32,6 +33,7 @@ function showApp(me) {
   $("app").hidden = false;
   $("whoami").textContent = me.username;
   role = me.role;
+  $("nav-audit").hidden = role !== "admin";
   setCsrf(me.csrf);
   route();
   startStream();
@@ -41,6 +43,27 @@ function setConn(state, text) {
   const el = $("conn");
   el.dataset.state = state;
   el.textContent = text;
+}
+
+function renderAlerts(list) {
+  const box = $("alerts");
+  box.hidden = list.length === 0;
+  box.replaceChildren(
+    ...list.map((a) => {
+      const unit = a.kind === "temperature_high" ? "°C" : "%";
+      const li = document.createElement("li");
+      li.dataset.level = a.level;
+      const title = document.createElement("b");
+      title.textContent = a.subject ? `${a.title}: ${a.subject}` : a.title;
+      const val = document.createElement("span");
+      val.textContent = `${a.value}${unit}`;
+      const when = document.createElement("span");
+      when.className = "when";
+      when.textContent = "since " + new Date(a.since * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      li.append(title, val, when);
+      return li;
+    }),
+  );
 }
 
 function notice(text) {
@@ -155,6 +178,13 @@ async function startStream() {
       onSnapshot(JSON.parse(e.data));
     } catch {
       // A malformed event is dropped; the next one will be fine.
+    }
+  });
+  source.addEventListener("alerts", (e) => {
+    try {
+      renderAlerts(JSON.parse(e.data).alerts);
+    } catch {
+      // Keep whatever alerts are on screen; the next change resends the list.
     }
   });
   source.addEventListener("error", async () => {

@@ -12,6 +12,7 @@ const users_mod = @import("users.zig");
 const ratelimit = @import("ratelimit.zig");
 const audit = @import("audit.zig");
 const assets = @import("assets.zig");
+const alerts_mod = @import("alerts.zig");
 const docker = @import("integrations/docker.zig");
 const sampler_mod = @import("agent/sampler.zig");
 const encode = @import("agent/encode.zig");
@@ -37,6 +38,7 @@ pub const App = struct {
     limiter: ratelimit.Limiter = .{},
     sampler: sampler_mod.Sampler = .{},
     streams: std.atomic.Value(u32) = .init(0),
+    alerts: alerts_mod.Engine = .{},
     /// Null when the admin set `docker_socket = off`.
     docker: ?docker.Client = null,
     /// Null in tests.
@@ -68,6 +70,26 @@ pub const App = struct {
 
     fn record(app: *App, io: Io, now_s: i64, actor: []const u8, action: []const u8, ok: bool, ip: []const u8) void {
         app.recordTarget(io, now_s, actor, action, "", ok, ip);
+    }
+
+    /// Sampler hook: run the alert rules and write what changed to the audit
+    /// log and the process log. Actor is "system" because no person did this.
+    pub fn onSample(ctx: *anyopaque, io: Io, snap: *const @import("agent/collect.zig").Snapshot) void {
+        const app: *App = @ptrCast(@alignCast(ctx));
+        var events: [alerts_mod.max_alerts]alerts_mod.Event = undefined;
+        const n = app.alerts.evaluate(io, snap, &events);
+        for (events[0..n]) |ev| {
+            var target_buf: [160]u8 = undefined;
+            const target = std.fmt.bufPrint(&target_buf, "{s} {s} {s} {d:.1}", .{ @tagName(ev.alert.kind), ev.alert.subject.slice(), @tagName(ev.alert.level), ev.alert.value }) catch "alert";
+            var action_buf: [32]u8 = undefined;
+            const action = std.fmt.bufPrint(&action_buf, "alert.{s}", .{@tagName(ev.what)}) catch "alert";
+            if (ev.what == .cleared) {
+                log.info("alert cleared: {s}", .{target});
+            } else {
+                log.warn("alert {s}: {s}", .{ @tagName(ev.what), target });
+            }
+            app.recordTarget(io, snap.ts_s, "system", action, target, true, "");
+        }
     }
 
     fn recordTarget(app: *App, io: Io, now_s: i64, actor: []const u8, action: []const u8, target: []const u8, ok: bool, ip: []const u8) void {
@@ -136,6 +158,28 @@ pub fn dispatch(app: *App, io: Io, ctx: Ctx, body: []const u8, s: *Scratch) Repl
         const snap = app.sampler.latestCopy(io) orelse return err_unavailable;
         var w: Io.Writer = .fixed(&s.big);
         encode.writeSnapshot(&w, &snap) catch return err_internal;
+        return .{ .status = .ok, .body = w.buffered() };
+    }
+    if (std.mem.eql(u8, ctx.path, "/api/v1/audit")) {
+        if (!get) return err_method;
+        const sess = currentSession(app, io, ctx) orelse return err_unauth;
+        // Who did what is not for viewers.
+        if (sess.role != .admin) return err_forbidden;
+        const log_file = if (app.audit_log) |*l| l else return err_unavailable;
+        const limit = std.math.clamp(queryInt(ctx.query, "limit") orelse 100, 1, 200);
+        var read_buf: [48 * 1024]u8 = undefined;
+        const tail = log_file.readTail(io, &read_buf) catch return err_internal;
+        var w: Io.Writer = .fixed(&s.big);
+        audit.writeEntries(&w, tail.bytes, tail.from_start, limit) catch return err_internal;
+        return .{ .status = .ok, .body = w.buffered() };
+    }
+    if (std.mem.eql(u8, ctx.path, "/api/v1/alerts")) {
+        if (!get) return err_method;
+        _ = currentSession(app, io, ctx) orelse return err_unauth;
+        var list: [alerts_mod.max_alerts]alerts_mod.Alert = undefined;
+        const snap = app.alerts.snapshot(io, &list);
+        var w: Io.Writer = .fixed(&s.big);
+        alerts_mod.writeJson(&w, list[0..snap.n]) catch return err_internal;
         return .{ .status = .ok, .body = w.buffered() };
     }
     if (std.mem.eql(u8, ctx.path, "/api/v1/history")) {
@@ -439,7 +483,7 @@ pub fn run(io: Io, app: *App) !void {
     var group: Io.Group = .init;
     defer group.cancel(io);
     try group.concurrent(io, reaper, .{ io, &pool });
-    try group.concurrent(io, sampler_mod.Sampler.run, .{ &app.sampler, io, app.cfg.sample_interval_ms });
+    try group.concurrent(io, sampler_mod.Sampler.run, .{ &app.sampler, io, app.cfg.sample_interval_ms, @as(?sampler_mod.Sampler.Hook, .{ .ctx = app, .call = App.onSample }) });
 
     while (true) {
         const stream = listener.accept(io) catch |err| switch (err) {
@@ -562,7 +606,18 @@ const max_streams = 16;
 /// One step of the live stream: a snapshot event if the sampler produced a new
 /// one since `last_ts`, otherwise a comment line. The comment keeps proxies
 /// from timing the connection out and keeps our own idle reaper off it.
-fn streamTick(app: *App, io: Io, w: *Io.Writer, last_ts: *i64) !void {
+fn streamTick(app: *App, io: Io, w: *Io.Writer, last_ts: *i64, last_alerts: *u32) !void {
+    // Alerts change rarely, so they get their own event and only when the set
+    // actually changed. The first tick always sends them (version starts at 1).
+    const ver = app.alerts.currentVersion(io);
+    if (ver != last_alerts.*) {
+        last_alerts.* = ver;
+        var list: [alerts_mod.max_alerts]alerts_mod.Alert = undefined;
+        const snap = app.alerts.snapshot(io, &list);
+        try w.writeAll("event: alerts\ndata: ");
+        try alerts_mod.writeJson(w, list[0..snap.n]);
+        try w.writeAll("\n\n");
+    }
     if (app.sampler.latestCopy(io)) |snap| {
         if (snap.ts_s != last_ts.*) {
             last_ts.* = snap.ts_s;
@@ -612,6 +667,7 @@ fn serveStream(app: *App, io: Io, req: *http.Server.Request, ctx: Ctx, slot: *Sl
     };
 
     var last_ts: i64 = 0;
+    var last_alerts: u32 = 0;
     // Tick faster than the idle limit even when sampling is slow.
     const tick_ms: i64 = @min(app.cfg.sample_interval_ms, 5000);
     while (true) {
@@ -622,7 +678,7 @@ fn serveStream(app: *App, io: Io, req: *http.Server.Request, ctx: Ctx, slot: *Sl
             log.debug("stream: session ended", .{});
             return;
         }
-        streamTick(app, io, &bw.writer, &last_ts) catch |err| {
+        streamTick(app, io, &bw.writer, &last_ts, &last_alerts) catch |err| {
             log.debug("stream: write failed: {s}", .{@errorName(err)});
             return;
         };
@@ -808,16 +864,17 @@ test "stream tick emits a snapshot once, then pings" {
     var out: Io.Writer.Allocating = .init(std.testing.allocator);
     defer out.deinit();
     var last: i64 = 0;
+    var last_alerts: u32 = 0;
 
-    // No sample yet: just a keepalive.
-    try streamTick(&app, io, &out.writer, &last);
-    try std.testing.expectEqualStrings(": ping\n\n", out.written());
+    // First tick, no sample yet: the (empty) alert list, then a keepalive.
+    try streamTick(&app, io, &out.writer, &last, &last_alerts);
+    try std.testing.expectEqualStrings("event: alerts\ndata: {\"alerts\":[]}\n\n: ping\n\n", out.written());
 
     var snap: @import("agent/collect.zig").Snapshot = .{ .ts_s = 77 };
     snap.hostname.set("streambox");
     app.sampler.ingest(io, snap);
     out.clearRetainingCapacity();
-    try streamTick(&app, io, &out.writer, &last);
+    try streamTick(&app, io, &out.writer, &last, &last_alerts);
     try std.testing.expect(std.mem.startsWith(u8, out.written(), "event: snapshot\ndata: {"));
     try std.testing.expect(std.mem.endsWith(u8, out.written(), "}\n\n"));
     try std.testing.expect(std.mem.find(u8, out.written(), "streambox") != null);
@@ -826,8 +883,43 @@ test "stream tick emits a snapshot once, then pings" {
 
     // same timestamp again: no duplicate event
     out.clearRetainingCapacity();
-    try streamTick(&app, io, &out.writer, &last);
+    try streamTick(&app, io, &out.writer, &last, &last_alerts);
     try std.testing.expectEqualStrings(": ping\n\n", out.written());
+
+    // a new alert shows up in the stream exactly once
+    var hot: @import("agent/collect.zig").Snapshot = .{ .ts_s = 80 };
+    hot.mem = .{ .total_kb = 1000, .available_kb = 20 };
+    App.onSample(&app, io, &hot);
+    out.clearRetainingCapacity();
+    try streamTick(&app, io, &out.writer, &last, &last_alerts);
+    try std.testing.expect(std.mem.startsWith(u8, out.written(), "event: alerts\ndata: {\"alerts\":[{\"kind\":\"memory_high\""));
+    out.clearRetainingCapacity();
+    try streamTick(&app, io, &out.writer, &last, &last_alerts);
+    try std.testing.expect(std.mem.find(u8, out.written(), "event: alerts") == null);
+}
+
+test "alerts route needs a session and reports raised alerts" {
+    const io = std.testing.io;
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var app = try testApp(arena.allocator());
+    defer app.deinit(io);
+    var s: Scratch = .{};
+    try std.testing.expectEqual(http.Status.unauthorized, dispatch(&app, io, testCtx(.GET, "/api/v1/alerts"), "", &s).status);
+
+    var hot: @import("agent/collect.zig").Snapshot = .{ .ts_s = 90 };
+    hot.mount_count = 1;
+    hot.mounts[0].path.set("/data");
+    hot.mounts[0].usage = .{ .total_bytes = 100, .free_bytes = 3, .avail_bytes = 3 };
+    App.onSample(&app, io, &hot);
+
+    const issued = try app.sessions.create(app.gpa, io, 2, .viewer, 1000);
+    var ctx = testCtx(.GET, "/api/v1/alerts");
+    ctx.cookie_token = issued.token;
+    const r = dispatch(&app, io, ctx, "", &s);
+    try std.testing.expectEqual(http.Status.ok, r.status);
+    try std.testing.expect(std.mem.find(u8, r.body, "\"subject\":\"/data\"") != null);
+    try std.testing.expect(std.mem.find(u8, r.body, "\"level\":\"crit\"") != null);
 }
 
 test "docker routes enforce auth, role, csrf and validation before touching docker" {

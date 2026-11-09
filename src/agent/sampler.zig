@@ -72,8 +72,15 @@ pub const Sampler = struct {
         return s.count;
     }
 
+    /// Called after every successful sample, on the sampler's own task. Keep
+    /// it quick: it delays the next tick.
+    pub const Hook = struct {
+        ctx: *anyopaque,
+        call: *const fn (ctx: *anyopaque, io: Io, snap: *const Snapshot) void,
+    };
+
     /// Runs until cancelled. Returns early on a platform we can't read.
-    pub fn run(s: *Sampler, io: Io, interval_ms: u32) Io.Cancelable!void {
+    pub fn run(s: *Sampler, io: Io, interval_ms: u32, hook: ?Hook) Io.Cancelable!void {
         const Source = if (build_options.fake_host) collect.FakeSource else collect.LinuxSource;
         var c: collect.Collector(Source) = .{ .source = if (build_options.fake_host) .{} else .{ .io = io } };
         const log = std.log.scoped(.sampler);
@@ -86,6 +93,7 @@ pub const Sampler = struct {
                 if (failing) log.info("sampling recovered", .{});
                 failing = false;
                 s.ingest(io, snap);
+                if (hook) |h| h.call(h.ctx, io, &snap);
             } else |err| switch (err) {
                 error.Unsupported => {
                     log.warn("host monitoring is only implemented for Linux, disabled", .{});

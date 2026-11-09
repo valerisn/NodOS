@@ -10,6 +10,7 @@ pub const server = @import("server.zig");
 pub const auth = @import("auth.zig");
 pub const users = @import("users.zig");
 pub const assets = @import("assets.zig");
+pub const alerts = @import("alerts.zig");
 pub const ratelimit = @import("ratelimit.zig");
 pub const audit = @import("audit.zig");
 pub const integrations = struct {

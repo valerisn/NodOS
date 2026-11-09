@@ -93,11 +93,41 @@ data: {"ts":1794216317,"hostname":"homebox", ...}
 
 ```
 
-Between samples the server sends `: ping` comment lines (at least every 5
+An `event: alerts` with the `/alerts` JSON is sent first and again whenever the
+alert set changes. Between samples the server sends `: ping` comment lines (at least every 5
 seconds) so proxies keep the connection open. The stream ends when the client
 disconnects, the session expires or is logged out, or the server stops. At most
 16 streams run at once; more get 503. Browsers reconnect automatically with
 `EventSource`, which sends the session cookie, so no token handling is needed.
+
+### `GET /api/v1/alerts`
+
+Requires a session. Active threshold alerts:
+
+```json
+{"alerts": [{"kind": "disk_high", "title": "Disk nearly full", "subject": "/mnt/media",
+             "level": "warn", "value": 85.0, "since": 1794221629}]}
+```
+
+| Alert | Raised at | Cleared below |
+| --- | --- | --- |
+| `cpu_high` | 90% for 5 samples in a row | 80% |
+| `memory_high` | 90% used (crit at 95%) | 85% |
+| `swap_high` | 50% used, only if swap exists | 40% |
+| `disk_high`, per mount | 85% used (crit at 95%) | 82% |
+| `temperature_high`, per sensor | 80 °C (crit at 90 °C) | 75 °C |
+
+The gap between raise and clear levels is deliberate, so a reading hovering at
+the line does not flap. An alert for a drive that is unplugged is cleared.
+Raised, escalated and cleared alerts are written to the audit log as actor
+`system` and to the process log. The same list arrives on the stream as an
+`alerts` event whenever it changes. Thresholds are fixed for now.
+
+### `GET /api/v1/audit?limit=N`
+
+Admin only. The newest audit entries first, `limit` 1 to 200 (default 100):
+`{"entries":[{"ts","actor","action","target","ok","ip"}]}`. Reads the tail of
+`audit.log`, so very old entries need the file itself.
 
 ### Docker
 

@@ -31,6 +31,7 @@
         <a href="#/storage" data-route="storage">Storage</a>
         <a href="#/network" data-route="network">Network</a>
         <a href="#/docker" data-route="docker">Docker</a>
+        <a href="#/audit" data-route="audit" id="nav-audit" hidden>Audit log</a>
       </nav>
       <div class="who">
         <span id="conn" class="conn" data-state="connecting">Connecting</span>
@@ -42,6 +43,7 @@
       <h1 id="host-name" class="host-name">-</h1>
       <p id="host-meta" class="muted"></p>
     </section>
+    <ul id="alerts" class="alerts" aria-label="Active alerts" hidden></ul>
     <div id="notice" class="notice" role="status" hidden></div>
     <main id="view" class="view"></main>
   </div>
