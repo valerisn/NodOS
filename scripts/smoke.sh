@@ -145,6 +145,10 @@ if [ -n "${SMOKE_SKIP_POSIX:-}" ]; then
     exit 0
 fi
 
+# Connection flood: more idle sockets than the cap, never closed by the client.
+python3 "$(dirname "$0")/flood_check.py" "$PORT" || fail "idle connection flood was not recovered from"
+kill -0 "$SERVER_PID" || fail "server died during the connection flood"
+
 # Graceful shutdown: SIGTERM must end the process with exit 0, quickly.
 kill -TERM "$SERVER_PID"
 for _ in $(seq 1 50); do
