@@ -48,6 +48,39 @@ pub const Users = struct {
         return &u.list.items[u.list.items.len - 1];
     }
 
+    pub const ChangeError = error{ NoSuchUser, LastAdmin, OutOfMemory };
+
+    /// Replaces a user's password hash.
+    pub fn setHash(u: *Users, arena: std.mem.Allocator, name: []const u8, phc: []const u8) ChangeError!void {
+        for (u.list.items) |*user| {
+            if (std.mem.eql(u8, user.name, name)) {
+                user.phc = try arena.dupe(u8, phc);
+                return;
+            }
+        }
+        return error.NoSuchUser;
+    }
+
+    pub fn adminCount(u: *const Users) usize {
+        var n: usize = 0;
+        for (u.list.items) |user| {
+            if (user.role == .admin) n += 1;
+        }
+        return n;
+    }
+
+    /// Refuses to delete the only admin: that would leave nobody able to
+    /// manage the server short of editing files by hand.
+    pub fn remove(u: *Users, name: []const u8) ChangeError!void {
+        for (u.list.items, 0..) |user, i| {
+            if (!std.mem.eql(u8, user.name, name)) continue;
+            if (user.role == .admin and u.adminCount() == 1) return error.LastAdmin;
+            _ = u.list.orderedRemove(i);
+            return;
+        }
+        return error.NoSuchUser;
+    }
+
     pub fn write(u: *const Users, w: *Io.Writer) Io.Writer.Error!void {
         for (u.list.items) |user| {
             try w.print("{d}:{s}:{s}:{s}\n", .{ user.id, user.name, @tagName(user.role), user.phc });
@@ -149,6 +182,30 @@ test "add, find, round trip" {
     try std.testing.expectEqual(@as(usize, 2), back.list.items.len);
     try std.testing.expectEqual(auth.Role.viewer, back.find("bob").?.role);
     try std.testing.expectEqualStrings(first.phc, back.find("alice").?.phc);
+}
+
+test "change password, remove, and the last admin is protected" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var u: Users = .{};
+    _ = try u.add(a, "alice", .admin, "$argon2id$old");
+    _ = try u.add(a, "bob", .viewer, "$argon2id$b");
+
+    try u.setHash(a, "alice", "$argon2id$new");
+    try std.testing.expectEqualStrings("$argon2id$new", u.find("alice").?.phc);
+    try std.testing.expectError(error.NoSuchUser, u.setHash(a, "carol", "x"));
+
+    try std.testing.expectError(error.LastAdmin, u.remove("alice"));
+    try std.testing.expectError(error.NoSuchUser, u.remove("carol"));
+    try u.remove("bob");
+    try std.testing.expect(u.find("bob") == null);
+
+    // with a second admin, the first can go
+    _ = try u.add(a, "dave", .admin, "$argon2id$d");
+    try u.remove("alice");
+    try std.testing.expectEqual(@as(usize, 1), u.list.items.len);
+    try std.testing.expectEqual(@as(usize, 1), u.adminCount());
 }
 
 test "corrupt files are rejected" {

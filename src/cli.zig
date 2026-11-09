@@ -8,13 +8,17 @@ pub const Command = enum {
     version,
     serve,
     user_add,
+    user_passwd,
+    user_remove,
+    user_list,
 };
 
 pub const Parsed = struct {
     command: Command,
     config_path: ?[]const u8 = null,
-    /// user_add only
+    /// user add, passwd, remove
     user_name: ?[]const u8 = null,
+    /// user add only
     role: auth.Role = .admin,
 };
 
@@ -23,6 +27,19 @@ pub const ParseError = error{
     UnexpectedArgument,
     MissingValue,
     InvalidRole,
+};
+
+const top_level = [_]struct { name: []const u8, cmd: Command }{
+    .{ .name = "help", .cmd = .help },
+    .{ .name = "version", .cmd = .version },
+    .{ .name = "serve", .cmd = .serve },
+};
+
+const user_sub = [_]struct { name: []const u8, cmd: Command, takes_name: bool }{
+    .{ .name = "add", .cmd = .user_add, .takes_name = true },
+    .{ .name = "passwd", .cmd = .user_passwd, .takes_name = true },
+    .{ .name = "remove", .cmd = .user_remove, .takes_name = true },
+    .{ .name = "list", .cmd = .user_list, .takes_name = false },
 };
 
 /// `args` is argv without the program name. No args means help, because a
@@ -34,19 +51,26 @@ pub fn parse(args: []const []const u8) ParseError!Parsed {
     var rest: []const []const u8 = undefined;
 
     if (std.mem.eql(u8, args[0], "user")) {
-        if (args.len < 2 or !std.mem.eql(u8, args[1], "add")) return error.UnknownCommand;
-        if (args.len < 3) return error.MissingValue;
-        out = .{ .command = .user_add, .user_name = args[2] };
-        rest = args[3..];
-    } else if (std.meta.stringToEnum(Command, args[0])) |cmd| {
-        if (cmd == .user_add) return error.UnknownCommand; // only reachable as "user add"
-        out = .{ .command = cmd };
+        if (args.len < 2) return error.UnknownCommand;
+        const sub = for (user_sub) |s| {
+            if (std.mem.eql(u8, s.name, args[1])) break s;
+        } else return error.UnknownCommand;
+        out = .{ .command = sub.cmd };
+        if (sub.takes_name) {
+            if (args.len < 3) return error.MissingValue;
+            out.user_name = args[2];
+            rest = args[3..];
+        } else rest = args[2..];
+    } else if (for (top_level) |t| {
+        if (std.mem.eql(u8, t.name, args[0])) break t;
+    } else null) |t| {
+        out = .{ .command = t.cmd };
         rest = args[1..];
     } else {
         return .{ .command = try flag(args[0]) };
     }
 
-    const takes_config = out.command == .serve or out.command == .user_add;
+    const takes_config = out.command != .help and out.command != .version;
     var i: usize = 0;
     while (i < rest.len) : (i += 1) {
         if (takes_config and std.mem.eql(u8, rest[i], "--config")) {
@@ -94,7 +118,24 @@ test "user add" {
     try std.testing.expectError(error.MissingValue, parse(&.{ "user", "add" }));
     try std.testing.expectError(error.InvalidRole, parse(&.{ "user", "add", "a", "--role", "root" }));
     try std.testing.expectError(error.UnknownCommand, parse(&.{ "user", "del", "a" }));
+    try std.testing.expectError(error.UnknownCommand, parse(&.{"user"}));
     try std.testing.expectError(error.UnknownCommand, parse(&.{"user_add"}));
+}
+
+test "user passwd, remove and list" {
+    const pw = try parse(&.{ "user", "passwd", "alice", "--config", "c.conf" });
+    try std.testing.expectEqual(Command.user_passwd, pw.command);
+    try std.testing.expectEqualStrings("alice", pw.user_name.?);
+    const rm = try parse(&.{ "user", "remove", "bob" });
+    try std.testing.expectEqual(Command.user_remove, rm.command);
+    const ls = try parse(&.{ "user", "list", "--config", "c.conf" });
+    try std.testing.expectEqual(Command.user_list, ls.command);
+    try std.testing.expect(ls.user_name == null);
+    // --role only means something for add
+    try std.testing.expectError(error.UnexpectedArgument, parse(&.{ "user", "passwd", "a", "--role", "admin" }));
+    // list takes no name
+    try std.testing.expectError(error.UnexpectedArgument, parse(&.{ "user", "list", "alice" }));
+    try std.testing.expectError(error.MissingValue, parse(&.{ "user", "remove" }));
 }
 
 test "rejects garbage" {

@@ -8,11 +8,16 @@ const usage =
     \\Usage: nodos <command>
     \\
     \\Commands:
-    \\  serve [--config PATH]                          Run the server
+    \\  serve [--config PATH]        Run the server
     \\  user add NAME [--role admin|viewer] [--config PATH]
-    \\                                                 Create a user, password read from stdin
-    \\  version                                        Print version and exit
-    \\  help                                           Show this message
+    \\                               Create a user; password is read from stdin
+    \\  user passwd NAME [--config PATH]
+    \\                               Change a password; new one is read from stdin
+    \\  user remove NAME [--config PATH]
+    \\                               Delete a user (never the last admin)
+    \\  user list [--config PATH]    Show users and roles
+    \\  version                      Print version and exit
+    \\  help                         Show this message
     \\
 ;
 
@@ -52,7 +57,7 @@ pub fn main(init: std.process.Init) !void {
         .help => try w.writeAll(usage),
         .version => try w.print("nodos {s}\n", .{nodos.version}),
         .serve => try serve(init, cmd),
-        .user_add => try userAdd(init, cmd, w),
+        .user_add, .user_passwd, .user_remove, .user_list => try userCommand(init, cmd, w),
     }
     try w.flush();
 }
@@ -86,7 +91,23 @@ fn serve(init: std.process.Init, cmd: nodos.cli.Parsed) !void {
     };
 }
 
-fn userAdd(init: std.process.Init, cmd: nodos.cli.Parsed, w: *Io.Writer) !void {
+/// Password comes from stdin, never argv: argv shows up in `ps` and shell
+/// history. Returns a PHC hash in `hash_buf`.
+fn readPasswordHash(init: std.process.Init, hash_buf: *[nodos.auth.hash_buf_len]u8) []const u8 {
+    var in_buf: [512]u8 = undefined;
+    var stdin: Io.File.Reader = .init(.stdin(), init.io, &in_buf);
+    const line = (stdin.interface.takeDelimiter('\n') catch fatal("cannot read password", .{})) orelse
+        fatal("no password on stdin", .{});
+    const password = std.mem.trimEnd(u8, line, "\r");
+    return nodos.auth.hashPassword(init.gpa, init.io, password, hash_buf) catch |err| switch (err) {
+        error.PasswordTooShort => fatal("password must be at least {d} characters", .{nodos.auth.min_password_len}),
+        error.PasswordTooLong => fatal("password must be at most {d} characters", .{nodos.auth.max_password_len}),
+        else => fatal("hashing failed: {s}", .{@errorName(err)}),
+    };
+}
+
+/// All the `nodos user ...` commands: load users.db, change it, write it back.
+fn userCommand(init: std.process.Init, cmd: nodos.cli.Parsed, w: *Io.Writer) !void {
     const io = init.io;
     const arena = init.arena.allocator();
     const cfg = loadConfig(io, arena, cmd.config_path);
@@ -96,27 +117,43 @@ fn userAdd(init: std.process.Init, cmd: nodos.cli.Parsed, w: *Io.Writer) !void {
     var users = nodos.users.load(io, arena, dir) catch |err|
         fatal("cannot load users: {s}", .{@errorName(err)});
 
-    // Password comes from stdin, never argv: argv shows up in `ps` and shell history.
-    var in_buf: [512]u8 = undefined;
-    var stdin: Io.File.Reader = .init(.stdin(), io, &in_buf);
-    const line = (stdin.interface.takeDelimiter('\n') catch fatal("cannot read password", .{})) orelse
-        fatal("no password on stdin", .{});
-    const password = std.mem.trimEnd(u8, line, "\r");
-
-    var hash_buf: [nodos.auth.hash_buf_len]u8 = undefined;
-    const phc = nodos.auth.hashPassword(init.gpa, io, password, &hash_buf) catch |err| switch (err) {
-        error.PasswordTooShort => fatal("password must be at least {d} characters", .{nodos.auth.min_password_len}),
-        error.PasswordTooLong => fatal("password must be at most {d} characters", .{nodos.auth.max_password_len}),
-        else => fatal("hashing failed: {s}", .{@errorName(err)}),
-    };
-
-    const user = users.add(arena, cmd.user_name.?, cmd.role, phc) catch |err| switch (err) {
-        error.InvalidName => fatal("name must be 1-32 chars of a-z, 0-9, '-' or '_'", .{}),
-        error.DuplicateName => fatal("user '{s}' already exists", .{cmd.user_name.?}),
-        else => fatal("cannot add user: {s}", .{@errorName(err)}),
-    };
+    switch (cmd.command) {
+        .user_list => {
+            if (users.list.items.len == 0) try w.writeAll("no users yet\n");
+            for (users.list.items) |u| try w.print("{s}\t{s}\n", .{ u.name, @tagName(u.role) });
+            return;
+        },
+        .user_add => {
+            var hash_buf: [nodos.auth.hash_buf_len]u8 = undefined;
+            const phc = readPasswordHash(init, &hash_buf);
+            const user = users.add(arena, cmd.user_name.?, cmd.role, phc) catch |err| switch (err) {
+                error.InvalidName => fatal("name must be 1-32 chars of a-z, 0-9, '-' or '_'", .{}),
+                error.DuplicateName => fatal("user '{s}' already exists", .{cmd.user_name.?}),
+                else => fatal("cannot add user: {s}", .{@errorName(err)}),
+            };
+            try w.print("created {s} user '{s}'\n", .{ @tagName(user.role), user.name });
+        },
+        .user_passwd => {
+            // Check the user exists before asking for anything.
+            if (users.find(cmd.user_name.?) == null) fatal("no such user '{s}'", .{cmd.user_name.?});
+            var hash_buf: [nodos.auth.hash_buf_len]u8 = undefined;
+            const phc = readPasswordHash(init, &hash_buf);
+            users.setHash(arena, cmd.user_name.?, phc) catch |err| fatal("cannot change password: {s}", .{@errorName(err)});
+            try w.print("changed password for '{s}'\n", .{cmd.user_name.?});
+        },
+        .user_remove => {
+            users.remove(cmd.user_name.?) catch |err| switch (err) {
+                error.NoSuchUser => fatal("no such user '{s}'", .{cmd.user_name.?}),
+                error.LastAdmin => fatal("'{s}' is the only admin; create another admin first", .{cmd.user_name.?}),
+                else => fatal("cannot remove user: {s}", .{@errorName(err)}),
+            };
+            try w.print("removed '{s}'\n", .{cmd.user_name.?});
+        },
+        else => unreachable,
+    }
     nodos.users.save(io, dir, &users) catch |err| fatal("cannot save users: {s}", .{@errorName(err)});
-    try w.print("created {s} user '{s}'\n", .{ @tagName(user.role), user.name });
+    // The running server keeps its own copy, loaded at start.
+    try w.writeAll("restart nodos for this to take effect on a running server\n");
 }
 
 fn openDataDir(io: Io, path: []const u8) Io.Dir {
