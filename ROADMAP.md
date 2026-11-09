@@ -3,23 +3,28 @@
 Legend: done, in progress, planned. Nothing is marked done until it is
 implemented and tested.
 
-## Phase 1: Foundation (in progress)
+## Phase 1: Foundation (done)
 
 - [x] Repository, license, editor and git settings
 - [x] Zig 0.17 build system, `nodos version` and `nodos help`
 - [x] Architecture and decision records
-- [ ] CI: format, build, test, cross-compile
-- [ ] Release workflow
-- [ ] Issue and pull request templates
-- [ ] Contribution, conduct and security policies
+- [x] CI: format, build, test, cross-compile (first run green)
+- [ ] Release workflow (written, never run; first tag will be its test)
+- [x] Issue and pull request templates
+- [x] Contribution, conduct and security policies
 
-## Phase 2: Core
+## Phase 2: Core (in progress)
 
-- [ ] Config file loading and validation
-- [ ] Logging
-- [ ] HTTP server spike, then the real server
-- [ ] Authentication: argon2id passwords, sessions, CSRF, rate limiting
-- [ ] Audit log
+- [x] Config file loading and validation
+- [x] Logging (stderr, runtime level)
+- [x] HTTP server (std.http.Server on std.Io)
+- [x] Authentication: argon2id passwords, server-side sessions, CSRF, login rate limiting
+- [x] Audit log for logins and logouts
+- [ ] Read timeouts and slowloris protection
+- [ ] Graceful shutdown on SIGINT and SIGTERM
+- [ ] TLS decision (built-in or documented reverse proxy)
+- [ ] Trusted proxy setting for client addresses
+- [ ] Fuzz the request path
 
 ## Phase 3: Monitoring
 

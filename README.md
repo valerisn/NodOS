@@ -13,8 +13,8 @@
   <img alt="Status: pre-alpha" src="https://img.shields.io/badge/status-pre--alpha-orange">
 </p>
 
-> **Status: pre-alpha.** The project foundation, build system and architecture
-> are in place. Monitoring, the API and the dashboard are not built yet. See the
+> **Status: pre-alpha.** The foundation, HTTP server and authentication work.
+> Monitoring and the dashboard are not built yet. See the
 > [roadmap](ROADMAP.md) for what exists. Release and download badges will be
 > added once the first release exists.
 
@@ -64,9 +64,15 @@ zig build
 
 Run the tests with `zig build test` and check formatting with `zig build fmt`.
 
-## Configuration
+## Run it
 
-Not implemented yet. Configuration arrives in Phase 2.
+```sh
+printf '%s\n' 'a long passphrase' | ./zig-out/bin/nodos user add alice --config nodos.conf
+./zig-out/bin/nodos serve --config nodos.conf
+```
+
+Today the server exposes health and authentication only. See
+[configuration](docs/configuration/README.md) and the [API](docs/api/README.md).
 
 ## Contributing
 
