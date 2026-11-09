@@ -91,7 +91,7 @@ if [ -z "${SMOKE_SKIP_POSIX:-}" ]; then
     if [ "$EVENTS" -lt 2 ]; then
         echo "--- raw stream response (first 40 lines, 200 cols):" >&2
         head -n 40 "$DIR/stream.out" | cut -c1-200 >&2
-        echo "--- /system was $(echo "$SYS" | wc -c) bytes" >&2
+        echo "--- /system was ${#SYS} bytes" >&2
         fail "stream delivered $EVENTS snapshot events, wanted at least 2"
     fi
 fi
