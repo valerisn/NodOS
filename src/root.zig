@@ -11,9 +11,15 @@ pub const auth = @import("auth.zig");
 pub const users = @import("users.zig");
 pub const ratelimit = @import("ratelimit.zig");
 pub const audit = @import("audit.zig");
+pub const agent = struct {
+    pub const proc = @import("agent/proc.zig");
+};
 
 test {
     std.testing.refAllDecls(@This());
+    // refAllDecls stops at the first level, and a silent zero-test module is
+    // exactly how parsers rot.
+    std.testing.refAllDecls(agent);
 }
 
 test "version is not empty" {
