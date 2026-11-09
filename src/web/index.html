@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>NodOS</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <noscript><p class="boot-note">NodOS needs JavaScript to show live data.</p></noscript>
+
+  <main id="login" class="login" hidden>
+    <form id="login-form" class="login-form" autocomplete="on">
+      <h1 class="wordmark">Nod<span>OS</span></h1>
+      <label for="username">Username</label>
+      <input id="username" name="username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" required>
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required>
+      <p id="login-error" class="form-error" role="alert" hidden></p>
+      <button type="submit" id="login-button">Sign in</button>
+    </form>
+  </main>
+
+  <div id="app" class="app" hidden>
+    <header class="top">
+      <a class="wordmark" href="#/" aria-label="NodOS overview">Nod<span>OS</span></a>
+      <nav id="nav" class="nav" aria-label="Sections">
+        <a href="#/" data-route="overview">Overview</a>
+        <a href="#/storage" data-route="storage">Storage</a>
+        <a href="#/network" data-route="network">Network</a>
+      </nav>
+      <div class="who">
+        <span id="conn" class="conn" data-state="connecting">Connecting</span>
+        <span id="whoami" class="muted"></span>
+        <button id="logout" type="button" class="quiet">Sign out</button>
+      </div>
+    </header>
+    <section class="host" aria-label="Host">
+      <h1 id="host-name" class="host-name">-</h1>
+      <p id="host-meta" class="muted"></p>
+    </section>
+    <div id="notice" class="notice" role="status" hidden></div>
+    <main id="view" class="view"></main>
+  </div>
+
+  <script type="module" src="/static/app.js"></script>
+</body>
+</html>

@@ -11,6 +11,7 @@ const auth = @import("auth.zig");
 const users_mod = @import("users.zig");
 const ratelimit = @import("ratelimit.zig");
 const audit = @import("audit.zig");
+const assets = @import("assets.zig");
 const sampler_mod = @import("agent/sampler.zig");
 const encode = @import("agent/encode.zig");
 const version = @import("build_options").version;
@@ -143,6 +144,9 @@ pub fn dispatch(app: *App, io: Io, ctx: Ctx, body: []const u8, s: *Scratch) Repl
         app.record(io, ctx.now_s, userName(app, sess), "auth.logout", true, ctx.ip_text);
         return .{ .status = .ok, .body = "{\"ok\":true}", .set_cookie = cookie(app, s, "", 0) };
     }
+    if (get) if (assets.find(ctx.path)) |a| {
+        return .{ .status = .ok, .content_type = a.content_type, .body = a.body };
+    };
     return err_not_found;
 }
 
