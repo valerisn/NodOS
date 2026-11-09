@@ -8,6 +8,7 @@ const usage =
     \\Usage: nodos <command>
     \\
     \\Commands:
+    \\  serve [--config PATH]   Run the server
     \\  version    Print version and exit
     \\  help       Show this message
     \\
@@ -26,9 +27,13 @@ pub fn main(init: std.process.Init) !void {
         std.process.exit(2);
     };
 
-    switch (cmd) {
+    switch (cmd.command) {
         .help => try w.writeAll(usage),
         .version => try w.print("nodos {s}\n", .{nodos.version}),
+        .serve => {
+            std.debug.print("nodos: serve is not implemented yet\n", .{});
+            std.process.exit(1);
+        },
     }
     try w.flush();
 }
