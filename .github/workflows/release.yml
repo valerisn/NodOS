@@ -1,0 +1,47 @@
+name: Release
+
+# Push a tag like v0.1.0 to publish. The tag must match build.zig.zon, the
+# first step checks that so we never ship a binary that reports the wrong version.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  ZIG_VERSION: 0.17.0
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Tag matches build.zig.zon
+        run: |
+          zon_version=$(grep -oP '\.version = "\K[^"]+' build.zig.zon)
+          if [ "v${zon_version}" != "${GITHUB_REF_NAME}" ]; then
+            echo "tag ${GITHUB_REF_NAME} does not match build.zig.zon version ${zon_version}" >&2
+            exit 1
+          fi
+
+      - name: Test
+        run: zig build test
+
+      - name: Build all targets
+        run: |
+          mkdir dist
+          for target in x86_64-linux-musl aarch64-linux-musl; do
+            zig build -Dtarget=$target -Doptimize=ReleaseSafe --prefix "out/$target"
+            tar -C "out/$target/bin" -czf "dist/nodos-${GITHUB_REF_NAME}-$target.tar.gz" nodos
+          done
+          (cd dist && sha256sum * > SHA256SUMS)
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --generate-notes --title "$GITHUB_REF_NAME"

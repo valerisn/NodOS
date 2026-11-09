@@ -1,0 +1,9 @@
+# Dependabot has no Zig ecosystem. We have zero Zig dependencies today; when
+# that changes, dependency review happens by hand in the PR that adds one.
+# This only keeps the workflow actions themselves current.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
