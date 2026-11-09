@@ -35,6 +35,19 @@ jobs:
       - name: Test
         run: zig build test --summary all
 
+  smoke:
+    name: Smoke test (linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: Build
+        run: zig build
+      - name: Run smoke test
+        run: bash scripts/smoke.sh
+
   cross:
     name: Cross compile ${{ matrix.target }}
     runs-on: ubuntu-latest
