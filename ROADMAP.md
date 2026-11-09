@@ -24,7 +24,7 @@ implemented and tested.
 - [ ] Graceful shutdown on SIGINT and SIGTERM (written, compiles for Linux, awaiting first CI smoke run)
 - [x] TLS decision: reverse proxy, documented with Caddy and nginx examples (D9)
 - [x] Trusted proxy setting for client addresses (rightmost X-Forwarded-For from a named proxy; tested live)
-- [ ] Fuzz the request path
+- [x] Hostile-input tests for every parser and the login path run on every build (src/robustness.zig); a long `--fuzz` campaign is still open
 
 ## Phase 3: Monitoring (in progress)
 
@@ -47,7 +47,7 @@ implemented and tested.
 - [x] Alerts: threshold rules with hysteresis, audit-logged, live in the dashboard (in-app only; outbound webhooks and email are not built)
 - [x] Audit log viewer (admin)
 
-## Phase 6: Release
+## Phase 6: Release (in progress)
 
 - [x] Security self-review written (docs/security); independent review and fuzzing still open
 - [x] Performance measured on Linux against the budget (CI step, numbers in docs/development/performance.md); long soak still to do

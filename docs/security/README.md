@@ -86,7 +86,8 @@ These are real. None is hidden elsewhere.
 - [x] Secrets absent from logs and the audit log (checked in the smoke test)
 - [x] Cookies and security headers set on every response
 - [x] Resource caps on connections, bodies, streams, sessions, alerts, output
-- [ ] Fuzzing of the HTTP request path
+- [x] Hostile-input tests on every parser and the login path (about 30,000 mutated inputs per run)
+- [ ] Long fuzzing campaign (`zig build test --fuzz`) of the HTTP request path
 - [ ] Independent review
 - [ ] Load and soak testing on a Linux host (see
   [performance](../development/performance.md))

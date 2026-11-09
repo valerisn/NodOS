@@ -477,7 +477,7 @@ test "stripPort" {
 /// The client address a trusted proxy reports: the rightmost X-Forwarded-For
 /// entry, because that is the one our own proxy appended. Earlier entries came
 /// from the client and can say anything.
-fn rightmostForwarded(xff: []const u8) ?Io.net.IpAddress {
+pub fn rightmostForwarded(xff: []const u8) ?Io.net.IpAddress {
     const comma = std.mem.findScalarLast(u8, xff, ',');
     const last = std.mem.trim(u8, if (comma) |c| xff[c + 1 ..] else xff, " \t");
     if (last.len == 0) return null;
@@ -896,7 +896,7 @@ test "cookie parsing" {
     try std.testing.expect(cookieValue("", "nodos_session") == null);
 }
 
-fn testApp(arena: std.mem.Allocator) !App {
+pub fn testApp(arena: std.mem.Allocator) !App {
     const io = std.testing.io;
     var users: users_mod.Users = .{};
     var hb: [auth.hash_buf_len]u8 = undefined;
@@ -905,7 +905,7 @@ fn testApp(arena: std.mem.Allocator) !App {
     return App.init(std.testing.allocator, io, .{}, users);
 }
 
-fn testCtx(method: http.Method, path: []const u8) Ctx {
+pub fn testCtx(method: http.Method, path: []const u8) Ctx {
     return .{ .method = method, .path = path, .client = @splat(7), .ip_text = "127.0.0.1", .now_s = 1000 };
 }
 
