@@ -524,6 +524,15 @@ fn serveStream(app: *App, io: Io, req: *http.Server.Request, ctx: Ctx, slot: *Sl
             log.debug("stream: write failed: {s}", .{@errorName(err)});
             return;
         };
+        // Two flushes, in this order. bw.flush() alone only pushes the
+        // connection's buffer; our events sit in bw.writer's own buffer and
+        // never leave until it fills. That bug hid on a dev box where events
+        // were big enough to overflow a small buffer, and showed up as a
+        // silent stream on Linux CI.
+        bw.writer.flush() catch |err| {
+            log.debug("stream: writer flush failed: {s}", .{@errorName(err)});
+            return;
+        };
         bw.flush() catch |err| {
             log.debug("stream: flush failed: {s}", .{@errorName(err)});
             return;
