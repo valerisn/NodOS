@@ -21,7 +21,7 @@ implemented and tested.
 - [x] Authentication: argon2id passwords, server-side sessions, CSRF, login rate limiting
 - [x] Audit log for logins and logouts
 - [x] Idle connection reaper (slowloris), verified with stalled sockets
-- [ ] Graceful shutdown on SIGINT and SIGTERM
+- [ ] Graceful shutdown on SIGINT and SIGTERM (written, compiles for Linux, awaiting first CI smoke run)
 - [ ] TLS decision (built-in or documented reverse proxy)
 - [ ] Trusted proxy setting for client addresses
 - [ ] Fuzz the request path
