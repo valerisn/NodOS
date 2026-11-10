@@ -238,10 +238,21 @@ export function dockerView({ role }) {
     body,
   );
   const logs = logPanel((err) => explain(err));
+  const imageBody = h("tbody");
+  const imageTable = h(
+    "table",
+    { hidden: true },
+    h("thead", {}, h("tr", {}, h("th", {}, "Image"), h("th", {}, "ID"), h("th", { class: "num" }, "Size"))),
+    imageBody,
+  );
+  const imageNote = h("p", { class: "muted", role: "status" });
+  const imageBlock = h("section", { class: "block", hidden: true }, h("h2", {}, "Images"), imageNote, imageTable);
 
   let timer = null;
   let busy = false;
   let alive = true;
+  let imageTick = 0;
+  const statsFor = new Map();
 
   function say(text, bad) {
     flash.hidden = !text;
@@ -260,11 +271,53 @@ export function dockerView({ role }) {
       message.textContent = d.containers.length === 0 ? "No containers yet." : d.total > d.containers.length ? `Showing ${d.containers.length} of ${d.total} containers.` : "";
       table.hidden = d.containers.length === 0;
       body.replaceChildren(...d.containers.map(row));
+      if (imageTick++ % 6 === 0) loadImages();
     } catch (err) {
       if (!alive) return;
       table.hidden = true;
       body.replaceChildren();
       message.textContent = err.status === 401 ? "Your session ended. Sign in again." : explain(err);
+    }
+  }
+
+  async function loadImages() {
+    try {
+      const d = await get("/docker/images");
+      if (!alive) return;
+      imageBlock.hidden = d.images.length === 0;
+      imageNote.textContent = d.total > d.images.length ? `Showing ${d.images.length} of ${d.total} images.` : "";
+      imageTable.hidden = d.images.length === 0;
+      imageBody.replaceChildren(
+        ...d.images.map((im) =>
+          h("tr", {}, h("td", {}, im.tags.length ? im.tags.join(", ") : h("span", { class: "muted" }, "untagged")), h("td", { class: "mount-dev" }, im.id), h("td", { class: "num" }, bytesText(im.size))),
+        ),
+      );
+    } catch {
+      if (alive) imageBlock.hidden = true;
+    }
+  }
+
+  function statsText(s) {
+    const cpu = s.cpu_percent === null ? "CPU -" : `CPU ${s.cpu_percent.toFixed(1)}%`;
+    const mem = s.mem_limit > 0 ? `${bytesText(s.mem_used)} of ${bytesText(s.mem_limit)}` : bytesText(s.mem_used);
+    return `${cpu}, memory ${mem}, ${s.pids} processes, network in ${bytesText(s.net_rx)}, out ${bytesText(s.net_tx)}`;
+  }
+
+  async function showStats(c, line) {
+    if (statsFor.has(c.id)) {
+      statsFor.delete(c.id);
+      line.hidden = true;
+      return;
+    }
+    statsFor.set(c.id, true);
+    line.hidden = false;
+    line.textContent = "Measuring...";
+    try {
+      const s = await get(`/docker/containers/${encodeURIComponent(c.id)}/stats`);
+      if (statsFor.has(c.id)) line.textContent = statsText(s);
+    } catch (err) {
+      statsFor.delete(c.id);
+      line.textContent = explain(err);
     }
   }
 
@@ -277,6 +330,12 @@ export function dockerView({ role }) {
   function row(c) {
     const running = c.state === "running";
     const actions = h("td", { class: "num actions" });
+    const detail = h("div", { class: "mount-dev", hidden: true, role: "status" });
+    if (running) actions.append(button("Stats", () => showStats(c, detail)));
+    if (running && statsFor.has(c.id)) {
+      statsFor.delete(c.id);
+      showStats(c, detail);
+    }
     if (admin) {
       actions.append(
         ...[
@@ -287,7 +346,7 @@ export function dockerView({ role }) {
       );
     }
     const dot = h("span", { class: "state", "data-level": stateLevel(c.state) }, c.state);
-    return h("tr", {}, h("td", {}, h("div", { class: "mount-name" }, c.name || c.id), h("div", { class: "mount-dev" }, `${c.image}, ${c.id}`)), h("td", {}, dot), h("td", {}, c.status), actions);
+    return h("tr", {}, h("td", {}, h("div", { class: "mount-name" }, c.name || c.id), h("div", { class: "mount-dev" }, `${c.image}, ${c.id}`), detail), h("td", {}, dot), h("td", {}, c.status), actions);
   }
 
   async function act(c, verb) {
@@ -311,11 +370,12 @@ export function dockerView({ role }) {
     logs.open(c.name || c.id, () => get(`/docker/containers/${encodeURIComponent(c.id)}/logs?tail=200`));
   }
 
-  const el = h("div", {}, flash, message, table, logs.el);
+  const el = h("div", {}, flash, message, table, imageBlock, logs.el);
   return {
     el,
     activate() {
       alive = true;
+      imageTick = 0;
       load();
       timer = setInterval(load, 5000);
     },
