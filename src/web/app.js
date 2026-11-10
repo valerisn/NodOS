@@ -120,7 +120,7 @@ function notice(text) {
 
 function routeName() {
   const name = location.hash.replace(/^#\/?/, "") || "overview";
-  return name in views ? name : "overview";
+  return Object.hasOwn(views, name) ? name : "overview";
 }
 
 function route() {
