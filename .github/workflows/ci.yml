@@ -55,6 +55,24 @@ jobs:
       - name: Update end to end (signatures, attacks, rollback, unattended rules)
         run: sudo env "PATH=$PATH" PATCH_DIR=/tmp/nodos-patch bash scripts/update_e2e.sh /tmp/nodos-new "$PWD/zig-out/bin/nodos" /tmp/signtool/bin/release-sign
 
+  reproducible:
+    name: Reproducible build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: Build twice from two places with cold caches
+        run: |
+          for n in a b; do
+            mkdir -p "/tmp/repro-$n"
+            git archive HEAD | tar -x -C "/tmp/repro-$n"
+            (cd "/tmp/repro-$n" && zig build -Doptimize=ReleaseSafe -Dstrip=true -Dtarget=x86_64-linux-musl -Dbuild-version=0.0.0-repro --cache-dir "/tmp/cache-$n" --global-cache-dir "/tmp/gcache-$n" --prefix "/tmp/out-$n")
+          done
+          sha256sum /tmp/out-a/bin/nodos /tmp/out-b/bin/nodos
+          [ "$(sha256sum < /tmp/out-a/bin/nodos)" = "$(sha256sum < /tmp/out-b/bin/nodos)" ]
+
   lint:
     name: Shell scripts
     runs-on: ubuntu-latest

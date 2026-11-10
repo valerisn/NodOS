@@ -1,0 +1,31 @@
+name: Soak
+
+on:
+  schedule:
+    - cron: "41 4 * * 3"
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: How long to run
+        default: "30"
+
+permissions:
+  contents: read
+
+env:
+  ZIG_VERSION: 0.17.0
+
+jobs:
+  soak:
+    name: Memory and descriptor growth under load
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: Build
+        run: zig build -Doptimize=ReleaseSafe -Dstrip=true
+      - name: Soak
+        run: bash scripts/soak.sh ${{ inputs.minutes || '30' }} zig-out/bin/nodos

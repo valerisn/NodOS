@@ -21,6 +21,20 @@ cannot show the secret again), and writes the public key to
 workflow refuses to publish a tag without the secret and checks its signature
 against `signing.pub` before uploading.
 
+## Reproducible builds
+
+CI builds the Linux x86_64 binary twice from two directories with empty caches
+and fails if the bytes differ, so anyone can rebuild a tagged release and
+compare it with the published file:
+
+```sh
+git clone --branch vX.Y.Z https://github.com/valerisn/NodOS && cd NodOS
+zig build -Doptimize=ReleaseSafe -Dstrip=true -Dtarget=x86_64-linux-musl --prefix /tmp/out
+sha256sum /tmp/out/bin/nodos   # compare with the tarball's binary
+```
+
+Use the Zig version named in `build.zig.zon`.
+
 ## Rehearse
 
 ```sh
