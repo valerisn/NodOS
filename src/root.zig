@@ -14,6 +14,9 @@ pub const alerts = @import("alerts.zig");
 pub const robustness = @import("robustness.zig");
 pub const ratelimit = @import("ratelimit.zig");
 pub const audit = @import("audit.zig");
+pub const update = struct {
+    pub const version = @import("update/version.zig");
+};
 pub const integrations = struct {
     pub const docker = @import("integrations/docker.zig");
     pub const systemd = @import("integrations/systemd.zig");
@@ -31,6 +34,7 @@ test {
     // exactly how parsers rot.
     std.testing.refAllDecls(agent);
     std.testing.refAllDecls(integrations);
+    std.testing.refAllDecls(update);
 }
 
 test "version is not empty" {
