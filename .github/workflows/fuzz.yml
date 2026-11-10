@@ -1,0 +1,29 @@
+name: Fuzz
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+    inputs:
+      rounds:
+        description: Rounds per randomized test
+        default: "2000000"
+
+permissions:
+  contents: read
+
+env:
+  ZIG_VERSION: 0.17.0
+
+jobs:
+  fuzz:
+    name: Randomized robustness tests, long run
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: Run
+        run: zig build test -Doptimize=ReleaseSafe -Dfuzz-iterations=${{ inputs.rounds || '2000000' }} --summary all
