@@ -1,7 +1,7 @@
 .{
     .name = .nodos,
     .fingerprint = 0xe7d2ed7646809f24, // don't change, zig would treat it as a different package
-    .version = "0.0.1-dev",
+    .version = "0.1.0",
     .minimum_zig_version = "0.17.0",
     .dependencies = .{},
     .paths = .{

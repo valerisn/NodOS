@@ -5,7 +5,9 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-First public release is not cut yet; everything here is on `main`.
+## [0.1.0] - 2026-11-10
+
+First release. Signed with the project key; `nodos update` verifies it.
 
 ### Security
 

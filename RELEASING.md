@@ -70,4 +70,4 @@ release with generated notes and `SHA256SUMS`.
 The honest list is in [ROADMAP.md](ROADMAP.md). The ones that matter most: run
 it on a real home server for a while, run a long fuzzing campaign, and get an
 independent look at the security model in `docs/security/README.md`. Releases
-are not signed yet; the checksums only guard against corruption.
+are signed, and the signature is what protects an update.
