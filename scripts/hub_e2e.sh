@@ -89,7 +89,7 @@ curl -s -H "$VIEW_COOKIE" "$HUB/remote/rack2/alerts" | grep -q '"alerts"' || fai
 grep -q '"actor":"hub"' "$DIR/remote/audit.log" 2>/dev/null || echo "note: remote has no audit line for the token yet"
 
 # the remote goes away: the hub says so instead of hanging
-kill -9 "${PIDS[1]}" 2>/dev/null || true
+kill -9 "${PIDS[0]}" 2>/dev/null || true
 sleep 1
 [ "$(code -H "$ADMIN_COOKIE" "$HUB/remote/rack2/alerts")" = "502" ] || fail "an unreachable remote should be 502"
 [ "$(code "$HUB/health")" = "200" ] || fail "the hub died with the remote"
