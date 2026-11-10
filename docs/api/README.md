@@ -43,7 +43,7 @@ Requires a session. Returns `{"total","images":[{"id","tags","size","created"}]}
 
 ### `GET /api/v1/docker/containers/{id}/stats`
 
-Requires a session. Returns `{"cpu_percent","mem_used","mem_limit","pids","net_rx","net_tx"}`. `cpu_percent` is `null` when Docker has no earlier sample to compare with. The call takes about a second because Docker measures over an interval. 404 for an unknown container.
+Requires a session. Returns `{"cpu_percent","mem_used","mem_limit","pids","net_rx","net_tx"}`. `cpu_percent` is `null` when Docker has no earlier sample to compare with. The call takes about a second because Docker measures over an interval. The dashboard calls it every 5 seconds while a container panel is open and draws the history in the browser; NodOS itself stores no per-container history. 404 for an unknown container.
 
 ### `GET /api/v1/me`
 

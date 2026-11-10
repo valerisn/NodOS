@@ -21,6 +21,8 @@ Found in the pre-release review, all fixed before any release. Details in
 
 ### Added
 
+- Docker page: the Stats button opens live CPU and memory charts for a container, measured only while the panel is open.
+
 - Storage health: software RAID from `/proc/mdstat` by default, ZFS pools and SMART disk checks when enabled (`zfs`, `smart_devices`). Problems raise alerts and show on the Storage page.
 
 - Alert thresholds are configurable (`alert_*` keys) and an admin-only Settings page shows the running configuration (read-only; secrets show only as set or not set).

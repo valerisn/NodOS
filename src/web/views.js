@@ -21,7 +21,7 @@ function setValue(el, value, unit) {
   if (unit) el.append(h("small", {}, unit));
 }
 
-function channel(name, chartOpts) {
+function channel(name, chartOpts, axisStart = "10 min ago") {
   const value = h("div", { class: "channel-value" });
   const sub = h("div", { class: "channel-sub" });
   const chartEl = h("div", { class: "chart" });
@@ -29,7 +29,7 @@ function channel(name, chartOpts) {
     "section",
     { class: "channel", "aria-label": name },
     h("div", { class: "channel-head" }, h("div", { class: "channel-name" }, name), value, sub),
-    h("div", {}, chartEl, h("div", { class: "chart-axis" }, h("span", {}, "10 min ago"), h("span", {}, "now"))),
+    h("div", {}, chartEl, h("div", { class: "chart-axis" }, h("span", {}, axisStart), h("span", {}, "now"))),
   );
   return { root, value, sub, chart: new StripChart(chartEl, chartOpts) };
 }
@@ -272,6 +272,13 @@ export function dockerView({ role }) {
     body,
   );
   const logs = logPanel((err) => explain(err));
+  const hist = { cpu: [], mem: [], id: null, name: "", timer: null, busy: false };
+  const histCpu = channel("Processor", { series: [{ color: "primary" }], minMax: 10, label: (v) => (v < 10 ? v.toFixed(1) : Math.round(v)) + "%" }, "since you opened this");
+  const histMem = channel("Memory", { series: [{ color: "secondary" }], minMax: 16 * 1024 * 1024, label: (v) => bytesText(v) }, "since you opened this");
+  const histTitle = h("h2", {});
+  const histText = h("p", { class: "muted", role: "status" });
+  const histClose = h("button", { type: "button", class: "quiet" }, "Close");
+  const histBlock = h("section", { class: "block", hidden: true }, h("div", { class: "block-head" }, histTitle, h("span", { class: "spacer" }), histClose), histText, histCpu.root, histMem.root);
   const imageBody = h("tbody");
   const imageTable = h(
     "table",
@@ -286,7 +293,6 @@ export function dockerView({ role }) {
   let busy = false;
   let alive = true;
   let imageTick = 0;
-  const statsFor = new Map();
 
   function say(text, bad) {
     flash.hidden = !text;
@@ -331,28 +337,55 @@ export function dockerView({ role }) {
     }
   }
 
-  function statsText(s) {
-    const cpu = s.cpu_percent === null ? "CPU -" : `CPU ${s.cpu_percent.toFixed(1)}%`;
-    const mem = s.mem_limit > 0 ? `${bytesText(s.mem_used)} of ${bytesText(s.mem_limit)}` : bytesText(s.mem_used);
-    return `${cpu}, memory ${mem}, ${s.pids} processes, network in ${bytesText(s.net_rx)}, out ${bytesText(s.net_tx)}`;
+  function closeHistory() {
+    clearInterval(hist.timer);
+    hist.timer = null;
+    hist.id = null;
+    histBlock.hidden = true;
+  }
+  histClose.addEventListener("click", closeHistory);
+
+  async function pollHistory() {
+    if (hist.busy || !hist.id) return;
+    hist.busy = true;
+    const id = hist.id;
+    try {
+      const s = await get(`/docker/containers/${encodeURIComponent(id)}/stats`);
+      if (hist.id !== id) return;
+      if (s.cpu_percent !== null) hist.cpu.push(s.cpu_percent);
+      hist.mem.push(s.mem_used);
+      if (hist.cpu.length > 120) hist.cpu.shift();
+      if (hist.mem.length > 120) hist.mem.shift();
+      histCpu.value.textContent = s.cpu_percent === null ? "-" : s.cpu_percent.toFixed(1) + "%";
+      histMem.value.textContent = bytesText(s.mem_used);
+      histMem.sub.textContent = s.mem_limit > 0 ? `of ${bytesText(s.mem_limit)}` : "";
+      histText.textContent = `${s.pids} processes, network in ${bytesText(s.net_rx)}, out ${bytesText(s.net_tx)}. Measured while this panel is open.`;
+      histCpu.chart.setData([hist.cpu]);
+      histMem.chart.setData([hist.mem]);
+    } catch (err) {
+      histText.textContent = explain(err);
+    } finally {
+      hist.busy = false;
+    }
   }
 
-  async function showStats(c, line) {
-    if (statsFor.has(c.id)) {
-      statsFor.delete(c.id);
-      line.hidden = true;
-      return;
-    }
-    statsFor.set(c.id, true);
-    line.hidden = false;
-    line.textContent = "Measuring...";
-    try {
-      const s = await get(`/docker/containers/${encodeURIComponent(c.id)}/stats`);
-      if (statsFor.has(c.id)) line.textContent = statsText(s);
-    } catch (err) {
-      statsFor.delete(c.id);
-      line.textContent = explain(err);
-    }
+  function showStats(c) {
+    if (hist.id === c.id) return closeHistory();
+    closeHistory();
+    hist.id = c.id;
+    hist.cpu = [];
+    hist.mem = [];
+    histTitle.textContent = c.name || c.id;
+    histText.textContent = "Measuring...";
+    histCpu.value.textContent = "-";
+    histMem.value.textContent = "-";
+    histMem.sub.textContent = "";
+    histCpu.chart.setData([[]]);
+    histMem.chart.setData([[]]);
+    histBlock.hidden = false;
+    histBlock.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    pollHistory();
+    hist.timer = setInterval(pollHistory, 5000);
   }
 
   function button(label, onClick, disabled) {
@@ -364,12 +397,7 @@ export function dockerView({ role }) {
   function row(c) {
     const running = c.state === "running";
     const actions = h("td", { class: "num actions" });
-    const detail = h("div", { class: "mount-dev", hidden: true, role: "status" });
-    if (running) actions.append(button("Stats", () => showStats(c, detail)));
-    if (running && statsFor.has(c.id)) {
-      statsFor.delete(c.id);
-      showStats(c, detail);
-    }
+    if (running) actions.append(button("Stats", () => showStats(c)));
     if (admin) {
       actions.append(
         ...[
@@ -380,7 +408,7 @@ export function dockerView({ role }) {
       );
     }
     const dot = h("span", { class: "state", "data-level": stateLevel(c.state) }, c.state);
-    return h("tr", {}, h("td", {}, h("div", { class: "mount-name" }, c.name || c.id), h("div", { class: "mount-dev" }, `${c.image}, ${c.id}`), detail), h("td", {}, dot), h("td", {}, c.status), actions);
+    return h("tr", {}, h("td", {}, h("div", { class: "mount-name" }, c.name || c.id), h("div", { class: "mount-dev" }, `${c.image}, ${c.id}`)), h("td", {}, dot), h("td", {}, c.status), actions);
   }
 
   async function act(c, verb) {
@@ -404,7 +432,7 @@ export function dockerView({ role }) {
     logs.open(c.name || c.id, () => get(`/docker/containers/${encodeURIComponent(c.id)}/logs?tail=200`));
   }
 
-  const el = h("div", {}, flash, message, table, imageBlock, logs.el);
+  const el = h("div", {}, flash, message, table, histBlock, imageBlock, logs.el);
   return {
     el,
     activate() {
@@ -416,6 +444,7 @@ export function dockerView({ role }) {
     deactivate() {
       alive = false;
       clearInterval(timer);
+      closeHistory();
     },
     update() {},
   };
