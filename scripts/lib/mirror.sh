@@ -1,3 +1,5 @@
+# shellcheck shell=bash
+# shellcheck disable=SC2034,SC2154
 # Shared helpers for the update tests: a fake release mirror served over
 # loopback http, signed with a throwaway key. Source this, don't run it.
 #

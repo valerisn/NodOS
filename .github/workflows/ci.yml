@@ -50,8 +50,8 @@ jobs:
       - name: Build what the update test needs
         run: |
           zig build sign-tool --prefix /tmp/signtool
-          zig build -Dbuild-version=9.9.9 --prefix /tmp/nodos-new
-          zig build -Dbuild-version=9.9.10 --prefix /tmp/nodos-patch
+          zig build -Doptimize=ReleaseSafe -Dstrip=true -Dbuild-version=9.9.9 --prefix /tmp/nodos-new
+          zig build -Doptimize=ReleaseSafe -Dstrip=true -Dbuild-version=9.9.10 --prefix /tmp/nodos-patch
       - name: Update end to end (signatures, attacks, rollback, unattended rules)
         # root, because replacing an installed binary needs it
         run: sudo env "PATH=$PATH" PATCH_DIR=/tmp/nodos-patch bash scripts/update_e2e.sh /tmp/nodos-new "$PWD/zig-out/bin/nodos" /tmp/signtool/bin/release-sign
@@ -62,7 +62,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: shellcheck
-        run: shellcheck scripts/*.sh
+        run: shellcheck -x scripts/*.sh scripts/lib/*.sh
 
   install:
     name: Install as a service (linux)

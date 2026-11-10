@@ -26,6 +26,7 @@ cleanup() {
 trap cleanup EXIT
 
 # Helpers shared with the systemd test (needs WORK and SIGN first).
+# shellcheck source=lib/mirror.sh
 . "$(dirname "$0")/lib/mirror.sh"
 
 NEW_BIN="$NEW_DIR/bin/nodos"

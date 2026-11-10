@@ -28,6 +28,7 @@ cleanup() {
     rm -rf "$WORK"
 }
 trap cleanup EXIT
+# shellcheck source=lib/mirror.sh
 . "$(dirname "$0")/lib/mirror.sh"
 
 BIN=/usr/local/bin/nodos
