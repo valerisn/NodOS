@@ -21,6 +21,8 @@ Found in the pre-release review, all fixed before any release. Details in
 
 ### Added
 
+- Docker page: image list and on-demand container stats (CPU, memory, processes, network).
+
 - Alert webhook (`webhook_url`): JSON POST on raised, escalated and cleared alerts.
 
 **Server and security**

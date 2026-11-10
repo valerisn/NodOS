@@ -43,7 +43,7 @@ implemented and tested.
 ## Phase 5: Management (in progress)
 
 - [x] Docker: list, start, stop, restart, logs, with a request timeout. Verified against fake daemons on real sockets, including one that never answers
-- [ ] Docker: container stats and images
+- [x] Docker: per-container stats (CPU, memory, processes, network) and an image list
 - [x] systemd services: status, start, stop, logs, allowlisted per unit (parsers tested; real-systemd status check in CI smoke test)
 - [x] Alerts: threshold rules with hysteresis, audit-logged, live in the dashboard (in-app only; outbound webhooks and email are not built)
 - [x] Audit log viewer (admin)

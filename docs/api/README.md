@@ -37,6 +37,14 @@ Body: `{"username": "...", "password": "..."}`, at most 1024 bytes.
 | 429 | Too many attempts from this address (5 per 15 minutes, counted per IPv6 /64) or against this account (20 per 15 minutes) |
 | 503 | Four sign-ins are already being checked; retry in a moment |
 
+### `GET /api/v1/docker/images`
+
+Requires a session. Returns `{"total","images":[{"id","tags","size","created"}]}`, at most 64 images. Untagged images have an empty `tags` list.
+
+### `GET /api/v1/docker/containers/{id}/stats`
+
+Requires a session. Returns `{"cpu_percent","mem_used","mem_limit","pids","net_rx","net_tx"}`. `cpu_percent` is `null` when Docker has no earlier sample to compare with. The call takes about a second because Docker measures over an interval. 404 for an unknown container.
+
 ### `GET /api/v1/me`
 
 Requires a session. Returns `{"username","role","csrf"}`. 401 otherwise.
