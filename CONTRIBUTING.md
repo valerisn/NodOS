@@ -31,6 +31,12 @@ zig build run -- version
 Small and focused beats large and thorough. Fill in the template: what changed,
 why, how you tested it, and screenshots for UI changes. Link the issue.
 
+## Sign-off
+
+Contributions are accepted under the Developer Certificate of Origin. Add
+`-s` to your commits (`git commit -s`). The terms are in
+[docs/legal/contributing-terms.md](docs/legal/contributing-terms.md).
+
 ## Reporting security issues
 
 Not here. See [SECURITY.md](SECURITY.md).

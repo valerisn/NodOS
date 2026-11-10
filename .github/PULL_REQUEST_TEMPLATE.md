@@ -17,5 +17,6 @@
 ## Checklist
 
 - [ ] `zig build fmt` and `zig build test` pass
+- [ ] Commits are signed off (`git commit -s`), see docs/legal/contributing-terms.md
 - [ ] Docs updated if behavior changed
 - [ ] No new dependency, or it is justified in `docs/architecture/decisions.md`

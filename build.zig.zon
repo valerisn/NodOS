@@ -10,6 +10,7 @@
         "src",
         "tools",
         "LICENSE",
+        "NOTICE",
         "README.md",
     },
 }

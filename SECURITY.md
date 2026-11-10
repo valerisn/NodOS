@@ -42,3 +42,5 @@ actions additionally require an admin role.
 **Known sharp edges.** Access to the Docker socket is equivalent to root on the
 host. Granting NodOS that access grants that power to anyone who can
 authenticate as a NodOS admin.
+
+Good-faith research is covered by the [safe harbor statement](docs/legal/safe-harbor.md). Fixed issues are listed in [security issues](security%20issues/README.md).
