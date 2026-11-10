@@ -132,4 +132,4 @@ Privately, as described in [SECURITY.md](SECURITY.md).
 
 ## License
 
-[NodOS Free Use License](LICENSE): use it, read it, change it and share it for free; do not sell it or make money from it. This is source-available, not open source in the OSI sense. See [NOTICE](NOTICE) and the [legal page](docs/legal/README.md) for the disclaimer, privacy, trademark and contributor terms.
+[NodOS Free Use License](LICENSE): use it, read it, change it and share it for free; do not sell it or make money from it. Anyone who tries gets a takedown (see [enforcement](docs/legal/enforcement.md)). This is source-available, not open source in the OSI sense. See [NOTICE](NOTICE) and the [legal page](docs/legal/README.md) for the disclaimer, privacy, trademark and contributor terms.

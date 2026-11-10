@@ -102,20 +102,29 @@ your rights for good unless the copyright holders say otherwise in writing.
 People who received NodOS from you keep their own rights as long as they
 follow this license themselves.
 
-9. NO WARRANTY
+9. ENFORCEMENT
+
+Anyone who sells NodOS or a Derivative, or otherwise tries to make money from
+it, is not covered by this license and is infringing the copyright. The
+copyright holders will happily file takedown notices (for example under the US
+DMCA, or the equivalent law elsewhere) with hosting providers, app stores,
+marketplaces, payment processors, search engines and code hosting platforms,
+and may take other legal action, against any such use, whoever does it.
+
+10. NO WARRANTY
 
 NODOS IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
 INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
 PARTICULAR PURPOSE AND NONINFRINGEMENT.
 
-10. LIMITATION OF LIABILITY
+11. LIMITATION OF LIABILITY
 
 IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
 DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
 OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH NODOS OR ITS USE OR
 OTHER DEALINGS IN IT.
 
-11. GENERAL
+12. GENERAL
 
 If a part of this license cannot be enforced, the rest still applies. Nothing
 here lets you do something the law forbids. Questions about whether a use is
