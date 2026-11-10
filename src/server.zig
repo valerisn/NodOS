@@ -12,6 +12,7 @@ const assets = @import("assets.zig");
 const alerts_mod = @import("alerts.zig");
 const notify = @import("notify.zig");
 const totp = @import("totp.zig");
+const health = @import("health.zig");
 const update_checker = @import("update/checker.zig");
 const update_release = @import("update/release.zig");
 const docker = @import("integrations/docker.zig");
@@ -42,6 +43,7 @@ pub const App = struct {
     alerts: alerts_mod.Engine = .{},
     updates: update_checker.Checker = .{},
     tasks: ?*Io.Group = null,
+    health: health.Monitor = .{},
     totp_last: std.AutoHashMapUnmanaged(u32, u64) = .empty,
     totp_mutex: Io.Mutex = .init,
     notify_inflight: std.atomic.Value(u32) = .init(0),
@@ -83,7 +85,25 @@ pub const App = struct {
         const app: *App = @ptrCast(@alignCast(ctx));
         var events: [alerts_mod.max_alerts]alerts_mod.Event = undefined;
         const n = app.alerts.evaluate(io, snap, &events);
-        for (events[0..n]) |ev| {
+        app.emit(io, snap.ts_s, snap.hostname.slice(), events[0..n]);
+    }
+
+    pub fn onHealth(ctx: *anyopaque, io: Io, report: *const health.Report, now_s: i64) void {
+        const app: *App = @ptrCast(@alignCast(ctx));
+        var events: [alerts_mod.max_alerts]alerts_mod.Event = undefined;
+        const n = app.alerts.evaluateHealth(io, report, now_s, &events);
+        var host: []const u8 = "";
+        var hbuf: [64]u8 = undefined;
+        if (app.sampler.latestCopy(io)) |s| {
+            const h = s.hostname.slice();
+            @memcpy(hbuf[0..h.len], h);
+            host = hbuf[0..h.len];
+        }
+        app.emit(io, now_s, host, events[0..n]);
+    }
+
+    fn emit(app: *App, io: Io, ts_s: i64, host: []const u8, events: []const alerts_mod.Event) void {
+        for (events) |ev| {
             var target_buf: [160]u8 = undefined;
             const target = std.fmt.bufPrint(&target_buf, "{s} {s} {s} {d:.1}", .{ @tagName(ev.alert.kind), ev.alert.subject.slice(), @tagName(ev.alert.level), ev.alert.value }) catch "alert";
             var action_buf: [32]u8 = undefined;
@@ -93,8 +113,8 @@ pub const App = struct {
             } else {
                 log.warn("alert {s}: {s}", .{ @tagName(ev.what), target });
             }
-            app.recordTarget(io, snap.ts_s, "system", action, target, true, "");
-            app.sendWebhook(io, snap.hostname.slice(), ev);
+            app.recordTarget(io, ts_s, "system", action, target, true, "");
+            app.sendWebhook(io, host, ev);
         }
     }
 
@@ -207,6 +227,15 @@ pub fn dispatch(app: *App, io: Io, ctx: Ctx, body: []const u8, s: *Scratch) Repl
         const tail = log_file.readTail(io, &read_buf) catch return err_internal;
         var w: Io.Writer = .fixed(&s.big);
         audit.writeEntries(&w, tail.bytes, tail.from_start, limit) catch return err_internal;
+        return .{ .status = .ok, .body = w.buffered() };
+    }
+    if (std.mem.eql(u8, ctx.path, "/api/v1/storage-health")) {
+        if (!get) return err_method;
+        _ = currentSession(app, io, ctx) orelse return err_unauth;
+        var rep: health.Report = .{};
+        const have = app.health.copy(io, &rep);
+        var w: Io.Writer = .fixed(&s.big);
+        health.writeJson(&w, &rep, have) catch return err_internal;
         return .{ .status = .ok, .body = w.buffered() };
     }
     if (std.mem.eql(u8, ctx.path, "/api/v1/settings")) {
@@ -707,6 +736,7 @@ pub fn run(io: Io, app: *App) !void {
                 log.warn("could not start the update checker", .{});
         }
     }
+    try group.concurrent(io, health.Monitor.run, .{ &app.health, io, app.gpa, health.Options{ .zfs = app.cfg.zfs, .smart_devices = app.cfg.smart_devices }, @as(?health.Hook, .{ .ctx = app, .call = App.onHealth }) });
     try group.concurrent(io, sampler_mod.Sampler.run, .{ &app.sampler, io, app.cfg.sample_interval_ms, @as(?sampler_mod.Sampler.Hook, .{ .ctx = app, .call = App.onSample }) });
 
     while (true) {
@@ -1116,6 +1146,34 @@ test "alerts route needs a session and reports raised alerts" {
     try std.testing.expectEqual(http.Status.ok, r.status);
     try std.testing.expect(std.mem.find(u8, r.body, "\"subject\":\"/data\"") != null);
     try std.testing.expect(std.mem.find(u8, r.body, "\"level\":\"crit\"") != null);
+}
+
+test "storage health route needs a session and reports what the monitor saw" {
+    const io = std.testing.io;
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var app = try testApp(arena.allocator());
+    defer app.deinit(io);
+    var s: Scratch = .{};
+    try std.testing.expectEqual(http.Status.unauthorized, dispatch(&app, io, testCtx(.GET, "/api/v1/storage-health"), "", &s).status);
+
+    var rep: health.Report = .{};
+    rep.add(.raid, "md0", .crit, "degraded");
+    App.onHealth(&app, io, &rep, 100);
+    app.health.report = rep;
+    app.health.have = true;
+
+    const issued = try app.sessions.create(app.gpa, io, 2, .viewer, 1000);
+    var ctx = testCtx(.GET, "/api/v1/storage-health");
+    ctx.cookie_token = issued.token;
+    const r = dispatch(&app, io, ctx, "", &s);
+    try std.testing.expectEqual(http.Status.ok, r.status);
+    try std.testing.expect(std.mem.find(u8, r.body, "\"name\":\"md0\"") != null);
+
+    var al = testCtx(.GET, "/api/v1/alerts");
+    al.cookie_token = issued.token;
+    const ar = dispatch(&app, io, al, "", &s);
+    try std.testing.expect(std.mem.find(u8, ar.body, "raid_problem") != null);
 }
 
 test "settings are admin only and carry no secrets" {

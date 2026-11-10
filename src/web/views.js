@@ -120,9 +120,43 @@ export function storageView() {
     h("thead", {}, h("tr", {}, h("th", {}, "Mount"), h("th", { class: "usage" }, "Used"), h("th", { class: "num" }, "Free"), h("th", { class: "num" }, "Size"))),
     body,
   );
-  const el = h("div", {}, table, empty);
+  const healthBody = h("tbody");
+  const healthBlock = h(
+    "section",
+    { class: "block", hidden: true },
+    h("h2", {}, "Disk and array health"),
+    h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, "Item"), h("th", {}, "State"), h("th", {}, "Details"))), healthBody),
+  );
+  let healthTimer = null;
+  async function loadHealth() {
+    try {
+      const d = await get("/storage-health");
+      healthBlock.hidden = d.items.length === 0;
+      healthBody.replaceChildren(
+        ...d.items.map((it) =>
+          h(
+            "tr",
+            { class: it.status === "crit" ? "bad" : "" },
+            h("td", {}, h("div", { class: "mount-name" }, it.name), h("div", { class: "mount-dev" }, { raid: "RAID array", zpool: "ZFS pool", smart: "Disk" }[it.kind] || it.kind)),
+            h("td", {}, h("span", { class: "state", "data-level": it.status === "ok" ? "ok" : it.status === "warn" ? "warn" : "crit" }, it.status === "ok" ? "healthy" : it.status === "warn" ? "check" : "problem")),
+            h("td", { class: "mount-dev" }, it.detail),
+          ),
+        ),
+      );
+    } catch {
+      healthBlock.hidden = true;
+    }
+  }
+  const el = h("div", {}, table, empty, healthBlock);
   return {
     el,
+    activate() {
+      loadHealth();
+      healthTimer = setInterval(loadHealth, 30000);
+    },
+    deactivate() {
+      clearInterval(healthTimer);
+    },
     update(snap) {
       empty.hidden = snap.storage.length > 0;
       table.hidden = snap.storage.length === 0;

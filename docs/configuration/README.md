@@ -25,6 +25,8 @@ line number.
 | `alert_disk_warn`, `alert_disk_crit` | `85`, `95` | Per mount, percent used |
 | `alert_temp_warn`, `alert_temp_crit` | `80`, `90` | Degrees Celsius |
 | `alert_swap_warn` | `50` | Swap used, percent |
+| `zfs` | `false` | Check ZFS pool health with `zpool list`. Needs the drop-in described in the installation guide |
+| `smart_devices` | empty | Comma separated device paths such as `/dev/sda` to check with `smartctl` (at most 8). Needs the drop-in described in the installation guide |
 | `update_mirror` | empty | Fetch releases from this URL instead of GitHub: a directory holding `latest.json` and `download/<tag>/`. https only, or http to this machine |
 | `services` | empty | Comma separated systemd units NodOS may show and control, without `.service`. Empty turns the feature off |
 | `docker_socket` | `/var/run/docker.sock` | Docker Engine socket, or `off`. See the warning below |

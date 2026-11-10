@@ -21,6 +21,8 @@ Found in the pre-release review, all fixed before any release. Details in
 
 ### Added
 
+- Storage health: software RAID from `/proc/mdstat` by default, ZFS pools and SMART disk checks when enabled (`zfs`, `smart_devices`). Problems raise alerts and show on the Storage page.
+
 - Alert thresholds are configurable (`alert_*` keys) and an admin-only Settings page shows the running configuration (read-only; secrets show only as set or not set).
 
 - `scripts/setup-tls.sh`: one command to put Caddy in front of NodOS, with a test in CI.

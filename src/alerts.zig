@@ -1,6 +1,7 @@
 const std = @import("std");
 const Io = std.Io;
 const collect = @import("agent/collect.zig");
+const health = @import("health.zig");
 
 pub const Kind = enum {
     cpu_high,
@@ -8,6 +9,9 @@ pub const Kind = enum {
     disk_high,
     temperature_high,
     swap_high,
+    raid_problem,
+    zpool_problem,
+    disk_health,
 
     pub fn title(k: Kind) []const u8 {
         return switch (k) {
@@ -16,6 +20,9 @@ pub const Kind = enum {
             .disk_high => "Disk nearly full",
             .temperature_high => "High temperature",
             .swap_high => "Heavy swap use",
+            .raid_problem => "RAID array needs attention",
+            .zpool_problem => "ZFS pool is not healthy",
+            .disk_health => "Disk reports a problem",
         };
     }
 };
@@ -143,6 +150,41 @@ pub const Engine = struct {
         return n;
     }
 
+    /// Storage health items become alerts of their own kinds. An item that is
+    /// ok, or that has vanished from the report, clears its alert.
+    pub fn evaluateHealth(e: *Engine, io: Io, report: *const health.Report, now: i64, out: *[max_alerts]Event) usize {
+        e.mutex.lockUncancelable(io);
+        defer e.mutex.unlock(io);
+        var n: usize = 0;
+        for (report.slice()) |it| {
+            const kind: Kind = switch (it.kind) {
+                .raid => .raid_problem,
+                .zpool => .zpool_problem,
+                .smart => .disk_health,
+            };
+            const want: ?Level = switch (it.status) {
+                .ok => null,
+                .warn => .warn,
+                .crit => .crit,
+            };
+            n = e.apply(kind, it.name.slice(), want, 0, true, now, out, n);
+        }
+        var i: usize = 0;
+        while (i < e.count) {
+            const a = e.active[i];
+            const tracked = a.kind == .raid_problem or a.kind == .zpool_problem or a.kind == .disk_health;
+            if (tracked and !hasHealthItem(report, a)) {
+                if (n < out.len) {
+                    out[n] = .{ .what = .cleared, .alert = a };
+                    n += 1;
+                }
+                e.removeAt(i);
+                e.version +%= 1;
+            } else i += 1;
+        }
+        return n;
+    }
+
     pub fn snapshot(e: *Engine, io: Io, out: *[max_alerts]Alert) struct { n: usize, version: u32 } {
         e.mutex.lockUncancelable(io);
         defer e.mutex.unlock(io);
@@ -219,6 +261,18 @@ fn level(v: f32, warn: f32, crit: f32) ?Level {
     return null;
 }
 
+fn hasHealthItem(report: *const health.Report, a: Alert) bool {
+    for (report.slice()) |it| {
+        const kind: Kind = switch (it.kind) {
+            .raid => .raid_problem,
+            .zpool => .zpool_problem,
+            .smart => .disk_health,
+        };
+        if (kind == a.kind and std.mem.eql(u8, it.name.slice(), a.subject.slice())) return true;
+    }
+    return false;
+}
+
 fn hasMount(snap: *const collect.Snapshot, path: []const u8) bool {
     for (snap.mounts[0..snap.mount_count]) |m| if (std.mem.eql(u8, m.path.slice(), path)) return true;
     return false;
@@ -252,6 +306,37 @@ pub fn writeJson(w: *Io.Writer, alerts: []const Alert) Io.Writer.Error!void {
     }
     try j.endArray();
     try j.endObject();
+}
+
+test "storage health raises, escalates and clears alerts" {
+    const io = std.testing.io;
+    var e: Engine = .{};
+    var out: [max_alerts]Event = undefined;
+    var r: health.Report = .{};
+    r.add(.raid, "md0", .warn, "resync 3%");
+    try std.testing.expectEqual(@as(usize, 1), e.evaluateHealth(io, &r, 10, &out));
+    try std.testing.expectEqual(EventKind.raised, out[0].what);
+    try std.testing.expectEqual(Kind.raid_problem, out[0].alert.kind);
+    try std.testing.expectEqual(@as(usize, 0), e.evaluateHealth(io, &r, 20, &out));
+
+    r = .{};
+    r.add(.raid, "md0", .crit, "degraded");
+    try std.testing.expectEqual(@as(usize, 1), e.evaluateHealth(io, &r, 30, &out));
+    try std.testing.expectEqual(EventKind.escalated, out[0].what);
+
+    r = .{};
+    r.add(.raid, "md0", .ok, "active");
+    try std.testing.expectEqual(@as(usize, 1), e.evaluateHealth(io, &r, 40, &out));
+    try std.testing.expectEqual(EventKind.cleared, out[0].what);
+
+    r = .{};
+    r.add(.smart, "sda", .crit, "failed");
+    _ = e.evaluateHealth(io, &r, 50, &out);
+    r = .{};
+    try std.testing.expectEqual(@as(usize, 1), e.evaluateHealth(io, &r, 60, &out));
+    try std.testing.expectEqual(EventKind.cleared, out[0].what);
+    var list: [max_alerts]Alert = undefined;
+    try std.testing.expectEqual(@as(usize, 0), e.snapshot(io, &list).n);
 }
 
 fn blank(ts: i64) collect.Snapshot {

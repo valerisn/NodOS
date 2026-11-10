@@ -56,10 +56,11 @@ implemented and tested.
 - [x] Install docs, hardened systemd unit and installer; CI installs and starts the service on Ubuntu (not yet tried on a real home server)
 - [x] Update notice, `nodos update` with signature verification, atomic swap, health check and automatic rollback, opt-in auto-update (tested end to end on Linux under systemd)
 - [x] Release signing key generated and the public half committed (`src/update/signing.pub`); the first signed release is waiting for the maintainer to tag it
+- [x] Storage health: mdadm RAID, ZFS pools and SMART (opt-in) with alerts
 
 ## Later
 
-Proxmox and VM management, backups, multiple servers, users and roles, custom
+Proxmox and VM management, backups of more than NodOS itself, multiple servers, users and roles, custom
 widgets, plugins.
 
 ## Known technical risks

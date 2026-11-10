@@ -3,6 +3,7 @@ const systemd = @import("integrations/systemd.zig");
 const release = @import("update/release.zig");
 const notify = @import("notify.zig");
 const alerts = @import("alerts.zig");
+const health = @import("health.zig");
 
 pub const LogLevel = enum { err, warn, info, debug };
 
@@ -20,6 +21,8 @@ pub const Config = struct {
     update_mirror: []const u8 = "",
     webhook_url: []const u8 = "",
     alerts: alerts.Thresholds = .{},
+    zfs: bool = false,
+    smart_devices: []const []const u8 = &.{},
     sample_interval_ms: u32 = 2000,
 };
 
@@ -75,6 +78,20 @@ pub fn parse(arena: std.mem.Allocator, text: []const u8, diag: *Diagnostic) Pars
             if (!release.urlAllowed(value))
                 return fail(diag, line_no, "update_mirror must be an https:// URL (http:// only for this machine)");
             cfg.update_mirror = try arena.dupe(u8, value);
+        } else if (std.mem.eql(u8, key, "zfs")) {
+            cfg.zfs = parseBool(value) orelse
+                return fail(diag, line_no, "zfs must be true or false");
+        } else if (std.mem.eql(u8, key, "smart_devices")) {
+            var list: std.ArrayList([]const u8) = .empty;
+            var parts = std.mem.splitScalar(u8, value, ',');
+            while (parts.next()) |p| {
+                const dev = std.mem.trim(u8, p, " \t");
+                if (dev.len == 0) continue;
+                if (!health.validDevice(dev)) return fail(diag, line_no, "smart_devices: use plain device paths like /dev/sda");
+                if (list.items.len >= health.max_smart_devices) return fail(diag, line_no, "smart_devices: at most 8 devices");
+                try list.append(arena, try arena.dupe(u8, dev));
+            }
+            cfg.smart_devices = list.items;
         } else if (std.mem.startsWith(u8, key, "alert_")) {
             try parseAlertKey(&cfg.alerts, key["alert_".len..], value, diag, line_no);
         } else if (std.mem.eql(u8, key, "webhook_url")) {
@@ -136,6 +153,10 @@ pub fn writeSettings(w: *std.Io.Writer, cfg: Config, version: []const u8) std.Io
     try j.write(cfg.update_mirror.len > 0);
     try j.objectField("webhook_set");
     try j.write(cfg.webhook_url.len > 0);
+    try j.objectField("zfs");
+    try j.write(cfg.zfs);
+    try j.objectField("smart_devices");
+    try j.write(cfg.smart_devices);
     try j.objectField("alerts");
     try j.beginObject();
     inline for (.{ "cpu_warn", "cpu_samples", "mem_warn", "mem_crit", "disk_warn", "disk_crit", "temp_warn", "temp_crit", "swap_warn" }) |name| {
@@ -250,6 +271,22 @@ test "settings json hides secrets and parses" {
     try std.testing.expect(o.get("update_mirror_set").?.bool);
     try std.testing.expectEqual(@as(usize, 2), o.get("services").?.array.items.len);
     try std.testing.expectEqual(@as(i64, 85), o.get("alerts").?.object.get("disk_warn").?.integer);
+}
+
+test "storage health settings" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var d: Diagnostic = .{};
+    const def = try parse(arena.allocator(), "", &d);
+    try std.testing.expect(!def.zfs);
+    try std.testing.expectEqual(@as(usize, 0), def.smart_devices.len);
+    const c = try parse(arena.allocator(), "zfs = true\nsmart_devices = /dev/sda, /dev/nvme0n1\n", &d);
+    try std.testing.expect(c.zfs);
+    try std.testing.expectEqual(@as(usize, 2), c.smart_devices.len);
+    try std.testing.expectError(error.InvalidConfig, parse(arena.allocator(), "smart_devices = sda", &d));
+    try std.testing.expectError(error.InvalidConfig, parse(arena.allocator(), "smart_devices = /dev/sda --flag", &d));
+    try std.testing.expectError(error.InvalidConfig, parse(arena.allocator(), "smart_devices = /dev/../etc/passwd", &d));
+    try std.testing.expectError(error.InvalidConfig, parse(arena.allocator(), "zfs = yes", &d));
 }
 
 test "webhook_url" {

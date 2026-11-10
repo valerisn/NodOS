@@ -241,6 +241,31 @@ authenticator app (the app asks for a "setup key"; choose time based, 6 digits,
 password. A code can be used once. If the device is lost, run
 `nodos user totp-off alice` on the server.
 
+## Disk and array health
+
+The Storage page lists software RAID arrays (read from `/proc/mdstat`) with no
+setup at all. A degraded or inactive array raises a critical alert, a rebuild
+raises a warning, and a scheduled consistency check does not.
+
+ZFS pools and SMART disk checks are opt-in because they run external programs
+and need more access than the stock service unit allows:
+
+```
+zfs = true
+smart_devices = /dev/sda, /dev/sdb
+```
+
+Install `zfsutils` / `smartmontools`, then add the drop-in from
+`packaging/nodos-storage.conf.example` to `/etc/systemd/system/nodos.service.d/`
+(it removes `PrivateDevices`, adds the `disk` group, and grants `CAP_SYS_RAWIO`
+for SATA/SAS SMART). This weakens the unit's hardening, so enable only what you
+use. NVMe SMART needs `CAP_SYS_ADMIN`, which is much broader; the example file
+explains why it is left out.
+
+Pools are checked every ten minutes and disks are never woken from standby for
+a check. Alerts follow the same path as the others (dashboard, audit log,
+webhook).
+
 ## Backup and restore
 
 ```sh

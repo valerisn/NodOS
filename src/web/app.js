@@ -52,12 +52,13 @@ function renderAlerts(list) {
   box.replaceChildren(
     ...list.map((a) => {
       const unit = a.kind === "temperature_high" ? "°C" : "%";
+      const plain = a.kind === "raid_problem" || a.kind === "zpool_problem" || a.kind === "disk_health";
       const li = document.createElement("li");
       li.dataset.level = a.level;
       const title = document.createElement("b");
       title.textContent = a.subject ? `${a.title}: ${a.subject}` : a.title;
       const val = document.createElement("span");
-      val.textContent = `${a.value}${unit}`;
+      val.textContent = plain ? a.level : `${a.value}${unit}`;
       const when = document.createElement("span");
       when.className = "when";
       when.textContent = "since " + new Date(a.since * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });

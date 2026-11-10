@@ -1,0 +1,21 @@
+# Drop-in for ZFS and SMART checks. Save as
+#   /etc/systemd/system/nodos.service.d/storage.conf
+# then: sudo systemctl daemon-reload && sudo systemctl restart nodos
+#
+# This loosens the hardening of the unit. Only add the lines you need.
+
+[Service]
+# needed by both: the stock unit hides /dev from the service
+PrivateDevices=no
+SupplementaryGroups=disk
+
+# ZFS: let `zpool list` open /dev/zfs
+DeviceAllow=/dev/zfs rw
+
+# SMART on SATA/SAS disks: smartctl sends raw commands to the drive
+CapabilityBoundingSet=CAP_SYS_RAWIO
+AmbientCapabilities=CAP_SYS_RAWIO
+NoNewPrivileges=no
+
+# SMART on NVMe drives needs CAP_SYS_ADMIN instead, which is far broader.
+# Think twice before adding it. Software RAID (mdadm) needs none of this.
