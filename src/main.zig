@@ -18,6 +18,10 @@ const usage =
     \\  user list [--config PATH]    Show users and roles
     \\  update [--check] [--rollback] [--auto on|off|status] [--yes] [--config PATH]
     \\                               Check for, install or undo a release
+    \\  backup --out FILE [--force] [--config PATH]
+    \\                               Save users and the audit log to a tar file
+    \\  restore FILE [--force] [--config PATH]
+    \\                               Put a backup back (stop the server first)
     \\  version                      Print version and exit
     \\  help                         Show this message
     \\
@@ -63,6 +67,8 @@ pub fn main(init: std.process.Init) !void {
             try w.flush();
             if (code != 0) std.process.exit(code);
         },
+        .backup => try backupCommand(init, cmd, w),
+        .restore => try restoreCommand(init, cmd, w),
         .user_add, .user_passwd, .user_remove, .user_list => try userCommand(init, cmd, w),
     }
     try w.flush();
@@ -155,6 +161,79 @@ fn userCommand(init: std.process.Init, cmd: nodos.cli.Parsed, w: *Io.Writer) !vo
     }
     nodos.users.save(io, dir, &users) catch |err| fatal("cannot save users: {s}", .{@errorName(err)});
     try w.writeAll("restart nodos for this to take effect on a running server\n");
+}
+
+fn fileExists(io: Io, dir: Io.Dir, name: []const u8) bool {
+    var f = dir.openFile(io, name, .{}) catch return false;
+    f.close(io);
+    return true;
+}
+
+fn writePrivate(io: Io, dir: Io.Dir, name: []const u8, data: []const u8) !void {
+    var atomic = try dir.createFileAtomic(io, name, .{ .permissions = nodos.users.privateFile(), .replace = true });
+    defer atomic.deinit(io);
+    var buf: [4096]u8 = undefined;
+    var fw = atomic.file.writer(io, &buf);
+    try fw.interface.writeAll(data);
+    try fw.interface.flush();
+    try atomic.replace(io);
+}
+
+fn backupCommand(init: std.process.Init, cmd: nodos.cli.Parsed, w: *Io.Writer) !void {
+    const io = init.io;
+    const arena = init.arena.allocator();
+    const cfg = loadConfig(io, arena, cmd.config_path);
+    var dir = openDataDir(io, cfg.data_dir);
+    defer dir.close(io);
+
+    const out_path = cmd.path.?;
+    const out_dir_path = std.fs.path.dirname(out_path) orelse ".";
+    const out_name = std.fs.path.basename(out_path);
+    var out_dir = Io.Dir.cwd().openDir(io, out_dir_path, .{}) catch |err|
+        fatal("cannot open {s}: {s}", .{ out_dir_path, @errorName(err) });
+    defer out_dir.close(io);
+    if (!cmd.force and fileExists(io, out_dir, out_name)) fatal("{s} already exists; pass --force to replace it", .{out_path});
+
+    const users_db = dir.readFileAlloc(io, nodos.backup.users_name, arena, .limited(1024 * 1024)) catch |err|
+        fatal("cannot read users.db in {s}: {s}", .{ cfg.data_dir, @errorName(err) });
+    const now_s = Io.Timestamp.now(io, .real).toSeconds();
+    const mf = try nodos.backup.manifest(arena, nodos.version, now_s);
+
+    var files: std.ArrayList(nodos.backup.Entry) = .empty;
+    try files.append(arena, .{ .name = nodos.backup.manifest_name, .data = mf });
+    try files.append(arena, .{ .name = nodos.backup.users_name, .data = users_db });
+    if (dir.readFileAlloc(io, nodos.backup.audit_name, arena, .limited(128 * 1024 * 1024))) |log| {
+        try files.append(arena, .{ .name = nodos.backup.audit_name, .data = log });
+    } else |err| switch (err) {
+        error.FileNotFound => {},
+        else => std.debug.print("nodos: skipping audit.log ({s})\n", .{@errorName(err)}),
+    }
+
+    const tar = try nodos.backup.pack(arena, files.items, now_s);
+    writePrivate(io, out_dir, out_name, tar) catch |err| fatal("cannot write {s}: {s}", .{ out_path, @errorName(err) });
+    try w.print("wrote {s} ({d} bytes, mode 0600)\nIt holds password hashes. Keep it private.\nCopy your config file too ({s}); it is not part of the backup.\n", .{ out_path, tar.len, cmd.config_path orelse "no config file in use" });
+}
+
+fn restoreCommand(init: std.process.Init, cmd: nodos.cli.Parsed, w: *Io.Writer) !void {
+    const io = init.io;
+    const arena = init.arena.allocator();
+    const cfg = loadConfig(io, arena, cmd.config_path);
+    const tar = Io.Dir.cwd().readFileAlloc(io, cmd.path.?, arena, .limited(160 * 1024 * 1024)) catch |err|
+        fatal("cannot read {s}: {s}", .{ cmd.path.?, @errorName(err) });
+    const entries = nodos.backup.unpack(arena, tar) catch |err| fatal("{s} is not a NodOS backup ({s})", .{ cmd.path.?, @errorName(err) });
+    nodos.backup.check(arena, entries) catch |err| fatal("backup refused ({s}): it must hold a readable user list with an admin", .{@errorName(err)});
+
+    var dir = openDataDir(io, cfg.data_dir);
+    defer dir.close(io);
+    if (!cmd.force and fileExists(io, dir, nodos.backup.users_name))
+        fatal("{s} already has users; pass --force to overwrite them (stop the server first)", .{cfg.data_dir});
+
+    for (entries) |e| {
+        if (std.mem.eql(u8, e.name, nodos.backup.manifest_name)) continue;
+        writePrivate(io, dir, e.name, e.data) catch |err| fatal("cannot write {s}: {s}", .{ e.name, @errorName(err) });
+        try w.print("restored {s} ({d} bytes)\n", .{ e.name, e.data.len });
+    }
+    try w.writeAll("done. start nodos again\n");
 }
 
 fn openDataDir(io: Io, path: []const u8) Io.Dir {

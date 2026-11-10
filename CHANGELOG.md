@@ -21,6 +21,9 @@ Found in the pre-release review, all fixed before any release. Details in
 
 ### Added
 
+- `nodos backup` and `nodos restore` for users and the audit log (plain tar, mode 0600).
+- Longer randomized robustness runs (`-Dfuzz-iterations`) and a weekly fuzz workflow.
+
 - Docker page: image list and on-demand container stats (CPU, memory, processes, network).
 
 - Alert webhook (`webhook_url`): JSON POST on raised, escalated and cleared alerts.

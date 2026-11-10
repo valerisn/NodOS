@@ -7,6 +7,8 @@ pub const Command = enum {
     version,
     serve,
     update,
+    backup,
+    restore,
     user_add,
     user_passwd,
     user_remove,
@@ -19,6 +21,8 @@ pub const Parsed = struct {
     user_name: ?[]const u8 = null,
     role: auth.Role = .admin,
     update: updater.Options = .{},
+    path: ?[]const u8 = null,
+    force: bool = false,
 };
 
 pub const ParseError = error{
@@ -35,6 +39,8 @@ const top_level = [_]struct { name: []const u8, cmd: Command }{
     .{ .name = "version", .cmd = .version },
     .{ .name = "serve", .cmd = .serve },
     .{ .name = "update", .cmd = .update },
+    .{ .name = "backup", .cmd = .backup },
+    .{ .name = "restore", .cmd = .restore },
 };
 
 const user_sub = [_]struct { name: []const u8, cmd: Command, takes_name: bool }{
@@ -83,12 +89,21 @@ pub fn parse(args: []const []const u8) ParseError!Parsed {
             i += 1;
             if (i >= rest.len) return error.MissingValue;
             out.config_path = rest[i];
+        } else if (out.command == .backup and std.mem.eql(u8, rest[i], "--out")) {
+            i += 1;
+            if (i >= rest.len) return error.MissingValue;
+            out.path = rest[i];
+        } else if ((out.command == .backup or out.command == .restore) and std.mem.eql(u8, rest[i], "--force")) {
+            out.force = true;
+        } else if (out.command == .restore and out.path == null and rest[i].len > 0 and rest[i][0] != '-') {
+            out.path = rest[i];
         } else if (out.command == .user_add and std.mem.eql(u8, rest[i], "--role")) {
             i += 1;
             if (i >= rest.len) return error.MissingValue;
             out.role = std.meta.stringToEnum(auth.Role, rest[i]) orelse return error.InvalidRole;
         } else return error.UnexpectedArgument;
     }
+    if ((out.command == .backup or out.command == .restore) and out.path == null) return error.MissingValue;
     return out;
 }
 
@@ -164,6 +179,21 @@ test "commands and flags" {
     try std.testing.expectEqual(Command.version, (try parse(&.{"version"})).command);
     try std.testing.expectEqual(Command.version, (try parse(&.{"--version"})).command);
     try std.testing.expectEqual(Command.help, (try parse(&.{"-h"})).command);
+}
+
+test "backup and restore arguments" {
+    const b = try parse(&.{ "backup", "--out", "/tmp/x.tar", "--force", "--config", "/c" });
+    try std.testing.expectEqual(Command.backup, b.command);
+    try std.testing.expectEqualStrings("/tmp/x.tar", b.path.?);
+    try std.testing.expect(b.force);
+    try std.testing.expectError(error.MissingValue, parse(&.{"backup"}));
+    const r = try parse(&.{ "restore", "/tmp/x.tar", "--config", "/c" });
+    try std.testing.expectEqual(Command.restore, r.command);
+    try std.testing.expectEqualStrings("/tmp/x.tar", r.path.?);
+    try std.testing.expect(!r.force);
+    try std.testing.expectError(error.MissingValue, parse(&.{"restore"}));
+    try std.testing.expectError(error.UnexpectedArgument, parse(&.{ "restore", "a", "b" }));
+    try std.testing.expectError(error.UnexpectedArgument, parse(&.{ "serve", "--out", "x" }));
 }
 
 test "serve takes a config path" {

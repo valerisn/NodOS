@@ -213,6 +213,25 @@ What is done to make it less risky:
 It is still not risk free. Read the changelog and run `sudo nodos update`
 yourself when it suits you; that is the safer habit.
 
+## Backup and restore
+
+```sh
+sudo -u nodos nodos backup --out /var/backups/nodos.tar --config /etc/nodos/nodos.conf
+sudo systemctl stop nodos
+sudo -u nodos nodos restore /var/backups/nodos.tar --force --config /etc/nodos/nodos.conf
+sudo systemctl start nodos
+```
+
+The backup is a plain tar file (open it with `tar tf`) holding `users.db`, the
+audit log and a small manifest. It contains password hashes, so it is written
+with mode 0600; keep it somewhere private. It does not include
+`/etc/nodos/nodos.conf`, which you manage yourself.
+
+`backup` refuses to overwrite an existing file and `restore` refuses to
+overwrite existing users unless you pass `--force`. A restore reads only the
+three known file names, rejects anything else in the archive, and checks that
+the user list parses and contains an admin before it writes anything.
+
 ## Uninstalling
 
 ```sh

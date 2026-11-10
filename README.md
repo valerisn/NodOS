@@ -78,6 +78,10 @@ proxy for anything else). The [installation guide](docs/installation/README.md)
 covers TLS with Caddy or nginx, Docker access, service control with polkit,
 upgrading and uninstalling.
 
+## Backup
+
+`nodos backup --out FILE` and `nodos restore FILE`, see the [installation guide](docs/installation/README.md#backup-and-restore).
+
 ## Privacy
 
 By default NodOS makes one outbound connection (a second only if you configure

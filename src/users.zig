@@ -110,7 +110,7 @@ pub fn parse(arena: std.mem.Allocator, text: []const u8) Error!Users {
     return users;
 }
 
-fn privateFile() Io.File.Permissions {
+pub fn privateFile() Io.File.Permissions {
     if (@hasDecl(Io.File.Permissions, "fromMode")) return Io.File.Permissions.fromMode(0o600);
     return .default_file;
 }

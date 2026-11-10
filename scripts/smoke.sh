@@ -39,6 +39,19 @@ if [ -z "${SMOKE_SKIP_POSIX:-}" ]; then
     [ "$(stat -c %a "$DIR/data/users.db")" = "600" ] || fail "users.db is not mode 600"
 fi
 
+"$BIN" backup --out "$DIR/backup.tar" --config "$DIR/nodos.conf" >/dev/null || fail "backup failed"
+if [ -z "${SMOKE_SKIP_POSIX:-}" ]; then
+    [ "$(stat -c %a "$DIR/backup.tar")" = "600" ] || fail "backup is not mode 600"
+    tar tf "$DIR/backup.tar" | grep -qx 'users.db' || fail "backup is not a readable tar holding users.db"
+fi
+"$BIN" backup --out "$DIR/backup.tar" --config "$DIR/nodos.conf" >/dev/null 2>&1 && fail "backup must not overwrite without --force"
+sed "s#data_dir = .*#data_dir = $NATIVE_DIR/restored#" "$DIR/nodos.conf" > "$DIR/restore.conf"
+"$BIN" restore "$DIR/backup.tar" --config "$DIR/restore.conf" >/dev/null || fail "restore failed"
+"$BIN" user list --config "$DIR/restore.conf" | grep -q '^smoke' || fail "restored data has no smoke user"
+"$BIN" restore "$DIR/backup.tar" --config "$DIR/restore.conf" >/dev/null 2>&1 && fail "restore must not overwrite without --force"
+printf 'not a backup' > "$DIR/junk.tar"
+"$BIN" restore "$DIR/junk.tar" --force --config "$DIR/restore.conf" >/dev/null 2>&1 && fail "restore accepted junk"
+
 "$BIN" serve --config "$DIR/nodos.conf" 2> "$DIR/server.log" &
 SERVER_PID=$!
 
