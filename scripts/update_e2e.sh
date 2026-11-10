@@ -34,9 +34,9 @@ start_mirror
 SERVER_PID="$MIRROR_PID"
 
 CONF="$WORK/nodos.conf"
-mkdir -p "$WORK/data"
+mkdir -p "$WORK/data" "$WORK/state"
 printf 'data_dir = %s\n' "$(native "$WORK/data")" > "$CONF"
-UPDATE=("$CURRENT" update --binary "$(native "$INSTALLED")" --mirror "http://127.0.0.1:$PORT" --config "$(native "$CONF")")
+UPDATE=("$CURRENT" update --binary "$(native "$INSTALLED")" --mirror "http://127.0.0.1:$PORT" --config "$(native "$CONF")" --state-dir "$(native "$WORK/state")")
 
 expect_refused() {
     local label="$1"; shift
@@ -93,13 +93,13 @@ grep -q "Nothing to do" "$WORK/out.txt" || { cat "$WORK/out.txt"; fail "should s
 
 say "rollback"
 if [ "$(uname -s)" = "Linux" ]; then
-    "$CURRENT" update --rollback --binary "$INSTALLED" --config "$CONF" > "$WORK/out.txt" 2>&1 || { cat "$WORK/out.txt"; fail "rollback failed"; }
+    "$CURRENT" update --rollback --binary "$INSTALLED" --config "$CONF" --state-dir "$WORK/state" > "$WORK/out.txt" 2>&1 || { cat "$WORK/out.txt"; fail "rollback failed"; }
 else
-    "$CURRENT" update --rollback --binary "$(native "$INSTALLED")" --config "$(native "$CONF")" > "$WORK/out.txt" 2>&1 || { cat "$WORK/out.txt"; fail "rollback failed"; }
+    "$CURRENT" update --rollback --binary "$(native "$INSTALLED")" --config "$(native "$CONF")" --state-dir "$(native "$WORK/state")" > "$WORK/out.txt" 2>&1 || { cat "$WORK/out.txt"; fail "rollback failed"; }
 fi
 [ "$(installed_version)" = "$BEFORE" ] || fail "rollback left $(installed_version), wanted $BEFORE"
 [ "$("$INST/nodos.previous" version | sed 's/^nodos //')" = "9.9.9" ] || fail "rollback should keep the replaced version as previous"
-grep -q "bad=v9.9.9" "$WORK/data/update-state" || fail "rolled-back version was not remembered as bad"
+grep -q "bad=v9.9.9" "$WORK/state/update-state" || fail "rolled-back version was not remembered as bad"
 echo "ok: rolled back to $BEFORE and remembered 9.9.9"
 
 make_release "v9.9.9" "$NEW_BIN" good
@@ -110,7 +110,7 @@ grep -q "failed" "$WORK/out.txt" || { cat "$WORK/out.txt"; fail "should explain 
 echo "ok: --force overrides a remembered failure"
 
 say "auto-run policy"
-cp "$CURRENT" "$INST/nodos"; chmod +x "$INST/nodos"; rm -f "$INST/nodos.previous" "$WORK/data/update-state"
+cp "$CURRENT" "$INST/nodos"; chmod +x "$INST/nodos"; rm -f "$INST/nodos.previous" "$WORK/state/update-state"
 make_release "v9.9.9" "$NEW_BIN" good
 "${UPDATE[@]}" --pubkey "$PUBLIC" --auto-run > "$WORK/out.txt" 2>&1 || { cat "$WORK/out.txt"; fail "auto-run should exit 0 when it chooses to wait"; }
 grep -q "waits for a manual" "$WORK/out.txt" || { cat "$WORK/out.txt"; fail "a big jump must wait for a human"; }
@@ -121,7 +121,7 @@ if [ -n "${PATCH_DIR:-}" ]; then
     PATCH_BIN="$PATCH_DIR/bin/nodos"
     [ -e "$PATCH_BIN" ] || PATCH_BIN="$PATCH_DIR/bin/nodos.exe"
     say "auto-run takes a mature patch release, waits for a fresh one, skips a bad one"
-    cat "$NEW_BIN" > "$INST/nodos"; chmod +x "$INST/nodos"; rm -f "$INST/nodos.previous" "$WORK/data/update-state"
+    cat "$NEW_BIN" > "$INST/nodos"; chmod +x "$INST/nodos"; rm -f "$INST/nodos.previous" "$WORK/state/update-state"
     [ "$(installed_version)" = "9.9.9" ] || fail "setup: expected 9.9.9 installed"
 
     PUBLISHED="$(date -u +%Y-%m-%dT%H:%M:%SZ)" make_release "v9.9.10" "$PATCH_BIN" good
@@ -130,14 +130,14 @@ if [ -n "${PATCH_DIR:-}" ]; then
     [ "$(installed_version)" = "9.9.9" ] || fail "auto-run installed a release inside its soak period"
     echo "ok: fresh release waits"
 
-    printf 'bad=v9.9.10\n' > "$WORK/data/update-state"
+    printf 'bad=v9.9.10\n' > "$WORK/state/update-state"
     PUBLISHED="2026-01-01T00:00:00Z" make_release "v9.9.10" "$PATCH_BIN" good
     "${UPDATE[@]}" --pubkey "$PUBLIC" --auto-run > "$WORK/out.txt" 2>&1 || fail "auto-run should exit 0 when it skips"
     grep -q "failed here before" "$WORK/out.txt" || { cat "$WORK/out.txt"; fail "a known-bad version must be skipped"; }
     [ "$(installed_version)" = "9.9.9" ] || fail "auto-run installed a known-bad version"
     echo "ok: known-bad release is skipped"
 
-    rm -f "$WORK/data/update-state"
+    rm -f "$WORK/state/update-state"
     "${UPDATE[@]}" --pubkey "$PUBLIC" --auto-run > "$WORK/out.txt" 2>&1 || { cat "$WORK/out.txt"; fail "a mature patch release should install under auto-run"; }
     [ "$(installed_version)" = "9.9.10" ] || { cat "$WORK/out.txt"; fail "installed $(installed_version), wanted 9.9.10"; }
     echo "ok: mature patch release installed unattended"

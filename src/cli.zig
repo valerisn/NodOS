@@ -136,6 +136,10 @@ fn parseUpdateFlags(rest: []const []const u8) ParseError!updater.Options {
             i += 1;
             if (i >= rest.len) return error.MissingValue;
             o.config_path = rest[i];
+        } else if (std.mem.eql(u8, a, "--state-dir")) {
+            i += 1;
+            if (i >= rest.len) return error.MissingValue;
+            o.state_dir = rest[i];
         } else if (std.mem.eql(u8, a, "--soak-days")) {
             i += 1;
             if (i >= rest.len) return error.MissingValue;
@@ -218,6 +222,7 @@ test "update flags" {
     try std.testing.expectEqualStrings("http://127.0.0.1:1", m.update.mirror.?);
     try std.testing.expectEqualStrings("c.conf", m.config_path.?);
     try std.testing.expectEqual(@as(u32, 7), m.update.soak_days);
+    try std.testing.expectEqualStrings("/s", (try parse(&.{ "update", "--state-dir", "/s" })).update.state_dir.?);
     try std.testing.expect(m.update.force);
 
     try std.testing.expectError(error.ConflictingOptions, parse(&.{ "update", "--check", "--rollback" }));

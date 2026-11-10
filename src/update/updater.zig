@@ -22,6 +22,9 @@ pub const Options = struct {
     mirror: ?[]const u8 = null,
     pubkey: ?[]const u8 = null,
     binary: ?[]const u8 = null,
+    /// Where the root-run updater keeps its skip list and history. Must be a
+    /// directory only root can write, see stateDir. Default /var/lib/nodos-update.
+    state_dir: ?[]const u8 = null,
     config_path: ?[]const u8 = null,
     soak_days: u32 = 3,
 };
@@ -34,6 +37,8 @@ pub const exit_update_available: u8 = 10;
 const default_binary = "/usr/local/bin/nodos";
 const default_config = "/etc/nodos/nodos.conf";
 const state_file = "update-state";
+const log_file = "update.log";
+const default_state_dir = "/var/lib/nodos-update";
 const unit_service = "nodos";
 const unit_timer = "nodos-update.timer";
 
@@ -228,9 +233,7 @@ fn cmdApply(ctx: *Ctx, auto: bool) Failure!u8 {
         return exit_ok;
     }
 
-    const state_path = try std.fmt.allocPrint(ctx.arena, "{s}/{s}", .{ ctx.cfg.data_dir, state_file });
-    const state = Io.Dir.cwd().readFileAlloc(ctx.io, state_path, ctx.arena, .limited(16 * 1024)) catch "";
-    const known_bad = stateHasBad(state, tag);
+    const known_bad = stateHasBad(readState(ctx), tag);
 
     if (auto) {
         if (!version_mod.autoAllowed(l.current, l.rel.version)) {
@@ -423,17 +426,50 @@ fn rollbackAfterFailure(ctx: *Ctx, target: Target, prev_name: []const u8, bad_ta
     return ctx.fail("the update to {s} did not work and was undone. It will not be tried again automatically.", .{bad_tag});
 }
 
+/// The updater runs as root, so everything it reads and writes besides the
+/// binary must live where an unprivileged user cannot plant a symlink. That is
+/// why this is not under the service's own data directory: that one belongs to
+/// the `nodos` user, and a compromised service could point a file there at
+/// /etc/passwd and have root truncate it. See "security issues".
+fn stateDir(ctx: *Ctx) []const u8 {
+    return ctx.opts.state_dir orelse default_state_dir;
+}
+
+fn openStateDir(ctx: *Ctx) ?Io.Dir {
+    const path = stateDir(ctx);
+    Io.Dir.cwd().createDirPath(ctx.io, path) catch |err| {
+        std.debug.print("nodos update: cannot create {s} ({s})\n", .{ path, @errorName(err) });
+        return null;
+    };
+    return Io.Dir.cwd().openDir(ctx.io, path, .{}) catch null;
+}
+
+fn readState(ctx: *Ctx) []const u8 {
+    var dir = openStateDir(ctx) orelse return "";
+    defer dir.close(ctx.io);
+    return dir.readFileAlloc(ctx.io, state_file, ctx.arena, .limited(16 * 1024)) catch "";
+}
+
 fn rememberBad(ctx: *Ctx, tag: []const u8) void {
-    const path = std.fmt.allocPrint(ctx.arena, "{s}/{s}", .{ ctx.cfg.data_dir, state_file }) catch return;
-    const old = Io.Dir.cwd().readFileAlloc(ctx.io, path, ctx.arena, .limited(16 * 1024)) catch "";
+    var dir = openStateDir(ctx) orelse return;
+    defer dir.close(ctx.io);
+    const old = dir.readFileAlloc(ctx.io, state_file, ctx.arena, .limited(16 * 1024)) catch "";
     const text = stateWithBad(ctx.arena, old, tag) catch return;
-    Io.Dir.cwd().writeFile(ctx.io, .{ .sub_path = path, .data = text }) catch |err|
+    const perms = if (@hasDecl(Io.File.Permissions, "fromMode")) Io.File.Permissions.fromMode(0o644) else Io.File.Permissions.default_file;
+    var atomic = dir.createFileAtomic(ctx.io, state_file, .{ .permissions = perms, .replace = true }) catch |err| {
+        std.debug.print("nodos update: could not record the failed version ({s})\n", .{@errorName(err)});
+        return;
+    };
+    defer atomic.deinit(ctx.io);
+    atomic.file.writeStreamingAll(ctx.io, text) catch return;
+    atomic.replace(ctx.io) catch |err|
         std.debug.print("nodos update: could not record the failed version ({s})\n", .{@errorName(err)});
 }
 
 fn writeAudit(ctx: *Ctx, action: []const u8, from: []const u8, tag: []const u8, ok: bool) void {
-    const path = std.fmt.allocPrint(ctx.arena, "{s}/{s}", .{ ctx.cfg.data_dir, "audit.log" }) catch return;
-    var f = Io.Dir.cwd().openFile(ctx.io, path, .{ .mode = .write_only }) catch return;
+    var dir = openStateDir(ctx) orelse return;
+    defer dir.close(ctx.io);
+    var f = dir.createFile(ctx.io, log_file, .{ .truncate = false }) catch return;
     defer f.close(ctx.io);
     var buf: [512]u8 = undefined;
     var w: Io.Writer = .fixed(&buf);

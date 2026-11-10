@@ -23,6 +23,7 @@ fi
 
 install -d -o nodos -g nodos -m 0750 /var/lib/nodos
 install -d -o root -g nodos -m 0750 /etc/nodos
+install -d -o root -g root -m 0755 /var/lib/nodos-update
 install -m 0755 "$BIN" /usr/local/bin/nodos
 
 if [ ! -e /etc/nodos/nodos.conf ]; then
