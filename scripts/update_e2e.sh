@@ -66,8 +66,8 @@ expect_refused "signed with an untrusted key" --pubkey "$PUBLIC" --yes
 make_release "v9.9.9" "$NEW_BIN" unsigned
 expect_refused "unsigned release" --pubkey "$PUBLIC" --yes
 make_release "v9.9.9" "$NEW_BIN" good
-expect_refused "no signing key available to this build" --yes
-grep -q "no release signing key" "$WORK/out.txt" || { cat "$WORK/out.txt"; fail "the no-key refusal should explain itself"; }
+expect_refused "release not signed by the key built into the binary" --yes
+grep -q "signature is NOT valid" "$WORK/out.txt" || { cat "$WORK/out.txt"; fail "the built-in key refusal should explain itself"; }
 expect_refused "garbage public key" --pubkey "not hex" --yes
 
 LIAR="$WORK/liar"; mkdir -p "$LIAR"

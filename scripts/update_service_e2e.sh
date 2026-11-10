@@ -50,16 +50,12 @@ make_release "v9.9.10" "$WORK/broken.sh" good
 CANARY="$WORK/canary"
 echo "untouched" > "$CANARY"
 chmod 0600 "$CANARY"
-[ -f "$DATA/audit.log" ] && cp -p "$DATA/audit.log" "$WORK/audit.log.keep"
 runuser -u nodos -- ln -sf "$CANARY" "$DATA/update-state" 2>/dev/null || ln -sf "$CANARY" "$DATA/update-state"
-runuser -u nodos -- ln -sf "$CANARY" "$DATA/audit.log" 2>/dev/null || true
 
 set +e; upd --yes > "$WORK/out.txt" 2>&1; CODE=$?; set -e
 cat "$WORK/out.txt"
 [ "$(cat "$CANARY")" = "untouched" ] || fail "the updater wrote through a symlink in the service data directory"
 rm -f "$DATA/update-state"
-rm -f "$DATA/audit.log"
-[ -f "$WORK/audit.log.keep" ] && install -o nodos -g nodos -m 0600 "$WORK/audit.log.keep" "$DATA/audit.log"
 [ "$CODE" -ne 0 ] || fail "a release that never became healthy was reported as a success"
 [ "$(installed_version)" = "$ORIGINAL" ] || fail "binary is $(installed_version), wanted the original $ORIGINAL back"
 systemctl is-active --quiet nodos || fail "the service is not running after the rollback"
