@@ -17,6 +17,7 @@ pub const notify = @import("notify.zig");
 pub const totp = @import("totp.zig");
 pub const health = @import("health.zig");
 pub const apps = @import("apps.zig");
+pub const installer = @import("installer.zig");
 pub const update = struct {
     pub const version = @import("update/version.zig");
     pub const verify = @import("update/verify.zig");

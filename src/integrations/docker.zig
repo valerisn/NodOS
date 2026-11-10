@@ -23,11 +23,15 @@ pub const Client = struct {
     };
 
     pub fn request(c: Client, arena: Allocator, method: []const u8, target: []const u8, max_body: usize) Error!Response {
+        return c.requestBody(arena, method, target, null, max_body);
+    }
+
+    pub fn requestBody(c: Client, arena: Allocator, method: []const u8, target: []const u8, body: ?[]const u8, max_body: usize) Error!Response {
         if (std.mem.findAny(u8, target, " \r\n\t") != null) return error.InvalidTarget;
         if (std.mem.findAny(u8, method, " \r\n\t") != null) return error.InvalidTarget;
 
         if (comptime build_options.fake_host) {
-            if (std.mem.eql(u8, c.socket_path, "fake")) return fake.respond(arena, method, target);
+            if (std.mem.eql(u8, c.socket_path, "fake")) return fake.respond(arena, method, target, body);
         }
 
         // a wedged dockerd must not pin a connection slot forever
@@ -37,7 +41,7 @@ pub const Client = struct {
         };
         var slots: [2]Race = undefined;
         var sel: Io.Select(Race) = .init(c.io, &slots);
-        sel.concurrent(.reply, exchange, .{ c, arena, method, target, max_body }) catch return error.Unavailable;
+        sel.concurrent(.reply, exchange, .{ c, arena, method, target, body, max_body }) catch return error.Unavailable;
         sel.concurrent(.timer, sleepMs, .{ c.io, c.timeout_ms }) catch {
             sel.cancelDiscard();
             return error.Unavailable;
@@ -53,21 +57,23 @@ pub const Client = struct {
         };
     }
 
-    fn sleepMs(io: Io, ms: u32) Io.Cancelable!void {
+    pub fn sleepMs(io: Io, ms: u32) Io.Cancelable!void {
         try io.sleep(.fromMilliseconds(ms), .awake);
     }
 
-    fn exchange(c: Client, arena: Allocator, method: []const u8, target: []const u8, max_body: usize) Error!Response {
+    fn exchange(c: Client, arena: Allocator, method: []const u8, target: []const u8, body: ?[]const u8, max_body: usize) Error!Response {
         const addr = Io.net.UnixAddress.init(c.socket_path) catch return error.Unavailable;
         const stream = addr.connect(c.io) catch return error.Unavailable;
         defer stream.close(c.io);
 
         var wbuf: [1024]u8 = undefined;
         var w = stream.writer(c.io, &wbuf);
+        const payload = body orelse "";
         w.interface.print(
-            "{s} {s} HTTP/1.0\r\nHost: docker\r\nUser-Agent: nodos\r\nAccept: application/json\r\nContent-Length: 0\r\n\r\n",
-            .{ method, target },
+            "{s} {s} HTTP/1.0\r\nHost: docker\r\nUser-Agent: nodos\r\nAccept: application/json\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n",
+            .{ method, target, payload.len },
         ) catch return error.Unavailable;
+        if (payload.len > 0) w.interface.writeAll(payload) catch return error.Unavailable;
         w.interface.flush() catch return error.Unavailable;
 
         var rbuf: [4096]u8 = undefined;
@@ -406,6 +412,232 @@ pub fn writeStats(w: *Io.Writer, st: Stats) Io.Writer.Error!void {
     try j.endObject();
 }
 
+pub const AppContainer = struct {
+    app: []const u8,
+    svc: []const u8,
+    name: []const u8,
+    state: []const u8,
+};
+
+const AppRaw = struct {
+    Names: []const []const u8 = &.{},
+    State: []const u8 = "",
+    Labels: ?std.json.ArrayHashMap([]const u8) = null,
+};
+
+pub fn listAppContainers(c: Client, arena: Allocator) (Client.Error || error{BadJson})![]AppContainer {
+    const target = "/containers/json?all=1&filters=%7B%22label%22%3A%5B%22nodos.app%22%5D%7D";
+    const resp = try c.request(arena, "GET", target, 1024 * 1024);
+    if (resp.status != 200) return error.BadResponse;
+    return parseAppContainers(arena, resp.body);
+}
+
+pub fn parseAppContainers(arena: Allocator, body: []const u8) (Client.Error || error{BadJson})![]AppContainer {
+    const raw = std.json.parseFromSliceLeaky([]AppRaw, arena, body, .{ .ignore_unknown_fields = true }) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.BadJson,
+    };
+    var out: std.ArrayList(AppContainer) = .empty;
+    for (raw) |r| {
+        const labels = r.Labels orelse continue;
+        const app = labels.map.get("nodos.app") orelse continue;
+        const svc = labels.map.get("nodos.svc") orelse "";
+        var name: []const u8 = if (r.Names.len > 0) r.Names[0] else "";
+        if (std.mem.startsWith(u8, name, "/")) name = name[1..];
+        try out.append(arena, .{ .app = app, .svc = svc, .name = name, .state = r.State });
+    }
+    return out.items;
+}
+
+pub const CreateResult = union(enum) { created, conflict, failed: []const u8 };
+
+fn messageOf(arena: Allocator, body: []const u8) []const u8 {
+    const M = struct { message: []const u8 = "" };
+    const m = std.json.parseFromSliceLeaky(M, arena, body, .{ .ignore_unknown_fields = true }) catch return "unexpected answer from docker";
+    return if (m.message.len > 0) m.message[0..@min(m.message.len, 200)] else "unexpected answer from docker";
+}
+
+pub fn createNetwork(c: Client, arena: Allocator, name: []const u8) Client.Error!CreateResult {
+    if (!validRef(name)) return error.InvalidTarget;
+    const body = try std.fmt.allocPrint(arena, "{{\"Name\":\"{s}\",\"Labels\":{{\"nodos.managed\":\"1\"}}}}", .{name});
+    const r = try c.requestBody(arena, "POST", "/networks/create", body, 64 * 1024);
+    return switch (r.status) {
+        201 => .created,
+        409 => .conflict,
+        else => .{ .failed = messageOf(arena, r.body) },
+    };
+}
+
+pub fn createContainer(c: Client, arena: Allocator, name: []const u8, body: []const u8) Client.Error!CreateResult {
+    if (!validRef(name)) return error.InvalidTarget;
+    var buf: [160]u8 = undefined;
+    const target = std.fmt.bufPrint(&buf, "/containers/create?name={s}", .{name}) catch return error.InvalidTarget;
+    const r = try c.requestBody(arena, "POST", target, body, 64 * 1024);
+    return switch (r.status) {
+        201 => .created,
+        409 => .conflict,
+        else => .{ .failed = messageOf(arena, r.body) },
+    };
+}
+
+/// Removes one container and keeps its volumes, so reinstalling finds the data.
+pub fn removeContainer(c: Client, arena: Allocator, name: []const u8) Client.Error!ActionResult {
+    if (!validRef(name)) return error.InvalidTarget;
+    var buf: [160]u8 = undefined;
+    const target = std.fmt.bufPrint(&buf, "/containers/{s}?force=true&v=false", .{name}) catch return error.InvalidTarget;
+    const r = try c.request(arena, "DELETE", target, 64 * 1024);
+    return switch (r.status) {
+        204 => .done,
+        404 => .not_found,
+        else => .failed,
+    };
+}
+
+pub fn removeNetwork(c: Client, arena: Allocator, name: []const u8) Client.Error!void {
+    if (!validRef(name)) return error.InvalidTarget;
+    var buf: [160]u8 = undefined;
+    const target = std.fmt.bufPrint(&buf, "/networks/{s}", .{name}) catch return error.InvalidTarget;
+    _ = try c.request(arena, "DELETE", target, 64 * 1024);
+}
+
+pub fn startContainer(c: Client, arena: Allocator, name: []const u8) Client.Error!CreateResult {
+    if (!validRef(name)) return error.InvalidTarget;
+    var buf: [160]u8 = undefined;
+    const target = std.fmt.bufPrint(&buf, "/containers/{s}/start", .{name}) catch return error.InvalidTarget;
+    const r = try c.request(arena, "POST", target, 64 * 1024);
+    return switch (r.status) {
+        204, 304 => .created,
+        else => .{ .failed = messageOf(arena, r.body) },
+    };
+}
+
+pub const PullError = error{ Unavailable, TimedOut, PullFailed, OutOfMemory };
+
+pub const Progress = struct {
+    mutex: Io.Mutex = .init,
+    text: [120]u8 = undefined,
+    len: usize = 0,
+    err: [200]u8 = undefined,
+    err_len: usize = 0,
+
+    pub fn set(p: *Progress, io: Io, text: []const u8) void {
+        p.mutex.lockUncancelable(io);
+        defer p.mutex.unlock(io);
+        const n = @min(text.len, p.text.len);
+        @memcpy(p.text[0..n], text[0..n]);
+        p.len = n;
+    }
+
+    pub fn setError(p: *Progress, io: Io, text: []const u8) void {
+        p.mutex.lockUncancelable(io);
+        defer p.mutex.unlock(io);
+        const n = @min(text.len, p.err.len);
+        @memcpy(p.err[0..n], text[0..n]);
+        p.err_len = n;
+    }
+
+    pub fn copy(p: *Progress, io: Io, out: *[120]u8) usize {
+        p.mutex.lockUncancelable(io);
+        defer p.mutex.unlock(io);
+        @memcpy(out[0..p.len], p.text[0..p.len]);
+        return p.len;
+    }
+};
+
+/// Pulls an image and reads the progress stream line by line instead of
+/// buffering it, since a big image streams megabytes of progress. Docker
+/// reports a failed pull inside a 200 answer, as an "error" field.
+pub fn pullImage(c: Client, io: Io, image: []const u8, tag: []const u8, progress: *Progress, timeout_ms: u32) PullError!void {
+    if (comptime build_options.fake_host) {
+        if (std.mem.eql(u8, c.socket_path, "fake")) {
+            progress.set(io, "downloading (demo)");
+            io.sleep(.fromMilliseconds(600), .awake) catch {};
+            return;
+        }
+    }
+    const Race = union(enum) { reply: PullError!void, timer: Io.Cancelable!void };
+    var slots: [2]Race = undefined;
+    var sel: Io.Select(Race) = .init(io, &slots);
+    sel.concurrent(.reply, pullExchange, .{ c, io, image, tag, progress }) catch return error.Unavailable;
+    sel.concurrent(.timer, Client.sleepMs, .{ io, timeout_ms }) catch {
+        sel.cancelDiscard();
+        return error.Unavailable;
+    };
+    const first = sel.await() catch {
+        sel.cancelDiscard();
+        return error.Unavailable;
+    };
+    sel.cancelDiscard();
+    return switch (first) {
+        .reply => |r| r,
+        .timer => error.TimedOut,
+    };
+}
+
+fn validImageName(s: []const u8) bool {
+    if (s.len == 0 or s.len > 200) return false;
+    for (s) |ch| if (!(std.ascii.isAlphanumeric(ch) or ch == '/' or ch == '.' or ch == '-' or ch == '_')) return false;
+    return true;
+}
+
+fn validTag(s: []const u8) bool {
+    if (s.len == 0 or s.len > 128) return false;
+    for (s) |ch| if (!(std.ascii.isAlphanumeric(ch) or ch == '.' or ch == '-' or ch == '_')) return false;
+    return true;
+}
+
+fn pullExchange(c: Client, io: Io, image: []const u8, tag: []const u8, progress: *Progress) PullError!void {
+    if (!validImageName(image) or !validTag(tag)) return error.PullFailed;
+    const addr = Io.net.UnixAddress.init(c.socket_path) catch return error.Unavailable;
+    const stream = addr.connect(io) catch return error.Unavailable;
+    defer stream.close(io);
+
+    var wbuf: [1024]u8 = undefined;
+    var w = stream.writer(io, &wbuf);
+    w.interface.print(
+        "POST /images/create?fromImage={s}&tag={s} HTTP/1.0\r\nHost: docker\r\nUser-Agent: nodos\r\nContent-Length: 0\r\n\r\n",
+        .{ image, tag },
+    ) catch return error.Unavailable;
+    w.interface.flush() catch return error.Unavailable;
+
+    var rbuf: [16 * 1024]u8 = undefined;
+    var r = stream.reader(io, &rbuf);
+    const status_line = (r.interface.takeDelimiter('\n') catch return error.Unavailable) orelse return error.Unavailable;
+    var parts = std.mem.splitScalar(u8, std.mem.trimEnd(u8, status_line, "\r"), ' ');
+    _ = parts.next();
+    const code = std.fmt.parseInt(u16, parts.next() orelse "", 10) catch return error.Unavailable;
+    var in_body = false;
+    var failed: ?[]const u8 = null;
+    while (true) {
+        const line_opt = r.interface.takeDelimiter('\n') catch break;
+        const line = std.mem.trimEnd(u8, line_opt orelse break, "\r");
+        if (!in_body) {
+            if (line.len == 0) in_body = true;
+            continue;
+        }
+        if (line.len == 0) continue;
+        var buf: [4096]u8 = undefined;
+        var fba: std.heap.FixedBufferAllocator = .init(&buf);
+        const Line = struct { status: []const u8 = "", @"error": []const u8 = "", id: []const u8 = "", message: []const u8 = "" };
+        const parsed = std.json.parseFromSliceLeaky(Line, fba.allocator(), line, .{ .ignore_unknown_fields = true }) catch continue;
+        if (parsed.@"error".len > 0) {
+            progress.setError(io, parsed.@"error");
+            failed = parsed.@"error";
+        } else if (parsed.message.len > 0 and code != 200) {
+            progress.setError(io, parsed.message);
+            failed = parsed.message;
+        } else if (parsed.status.len > 0) {
+            var t: [120]u8 = undefined;
+            const text = if (parsed.id.len > 0) std.fmt.bufPrint(&t, "{s} {s}", .{ parsed.status, parsed.id }) catch parsed.status else parsed.status;
+            progress.set(io, text);
+        }
+    }
+    if (failed != null or code != 200) {
+        if (progress.err_len == 0) progress.setError(io, "docker could not pull the image");
+        return error.PullFailed;
+    }
+}
+
 pub fn demuxLogs(arena: Allocator, body: []const u8) Allocator.Error![]const u8 {
     const framed = body.len >= 8 and body[0] <= 2 and body[1] == 0 and body[2] == 0 and body[3] == 0;
     if (!framed) return body;
@@ -491,7 +723,65 @@ const fake = struct {
     };
     var running = [_]bool{ true, true, true, false, false };
 
-    fn respond(arena: Allocator, method: []const u8, target: []const u8) Client.Error!Client.Response {
+    var app_names: [32][64]u8 = undefined;
+    var app_lens: [32]u8 = @splat(0);
+    var app_ids: [32][32]u8 = undefined;
+    var app_id_lens: [32]u8 = @splat(0);
+    var app_count: usize = 0;
+
+    fn respond(arena: Allocator, method: []const u8, target: []const u8, body: ?[]const u8) Client.Error!Client.Response {
+        if (std.mem.eql(u8, method, "POST") and std.mem.startsWith(u8, target, "/networks/create")) return .{ .status = 201, .body = "{\"Id\":\"net\"}" };
+        if (std.mem.eql(u8, method, "DELETE") and std.mem.startsWith(u8, target, "/networks/")) return .{ .status = 204, .body = "" };
+        if (std.mem.eql(u8, method, "POST") and std.mem.startsWith(u8, target, "/containers/create?name=")) {
+            const name = target["/containers/create?name=".len..];
+            const b = body orelse "";
+            const key = "\"nodos.app\":\"";
+            const at = std.mem.find(u8, b, key) orelse return .{ .status = 400, .body = "{\"message\":\"no label\"}" };
+            const rest = b[at + key.len ..];
+            const end = std.mem.findScalar(u8, rest, '"') orelse return .{ .status = 400, .body = "{\"message\":\"bad\"}" };
+            if (app_count < app_names.len and name.len < 64 and end < 32) {
+                @memcpy(app_names[app_count][0..name.len], name);
+                app_lens[app_count] = @intCast(name.len);
+                @memcpy(app_ids[app_count][0..end], rest[0..end]);
+                app_id_lens[app_count] = @intCast(end);
+                app_count += 1;
+            }
+            return .{ .status = 201, .body = "{\"Id\":\"0123456789abcdef\"}" };
+        }
+        if (std.mem.eql(u8, method, "DELETE") and std.mem.startsWith(u8, target, "/containers/nodos-")) {
+            var name = target["/containers/".len..];
+            if (std.mem.findScalar(u8, name, '?')) |q| name = name[0..q];
+            var i: usize = 0;
+            while (i < app_count) : (i += 1) {
+                if (std.mem.eql(u8, app_names[i][0..app_lens[i]], name)) {
+                    app_count -= 1;
+                    app_names[i] = app_names[app_count];
+                    app_lens[i] = app_lens[app_count];
+                    app_ids[i] = app_ids[app_count];
+                    app_id_lens[i] = app_id_lens[app_count];
+                    break;
+                }
+            }
+            return .{ .status = 204, .body = "" };
+        }
+        if (std.mem.eql(u8, method, "POST") and std.mem.startsWith(u8, target, "/containers/nodos-") and std.mem.find(u8, target, "/start") != null) return .{ .status = 204, .body = "" };
+        if (std.mem.eql(u8, method, "GET") and std.mem.find(u8, target, "nodos.app") != null) {
+            var out: std.ArrayList(u8) = .empty;
+            try out.append(arena, '[');
+            var i: usize = 0;
+            while (i < app_count) : (i += 1) {
+                if (i > 0) try out.append(arena, ',');
+                const nm = app_names[i][0..app_lens[i]];
+                const aid = app_ids[i][0..app_id_lens[i]];
+                const svc = if (std.mem.startsWith(u8, nm, "nodos-")) nm["nodos-".len + aid.len + 1 ..] else nm;
+                try out.print(arena, "{{\"Names\":[\"/{s}\"],\"State\":\"running\",\"Labels\":{{\"nodos.app\":\"{s}\",\"nodos.svc\":\"{s}\"}}}}", .{ nm, aid, svc });
+            }
+            try out.append(arena, ']');
+            return .{ .status = 200, .body = out.items };
+        }
+        if (std.mem.eql(u8, method, "GET") and std.mem.startsWith(u8, target, "/containers/json") and app_count > 0) {
+            // installed apps show up in the main container list too
+        }
         if (std.mem.eql(u8, method, "GET") and std.mem.startsWith(u8, target, "/containers/json")) {
             var out: std.ArrayList(u8) = .empty;
             try out.append(arena, '[');

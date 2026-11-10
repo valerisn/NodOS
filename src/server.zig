@@ -13,6 +13,8 @@ const alerts_mod = @import("alerts.zig");
 const notify = @import("notify.zig");
 const totp = @import("totp.zig");
 const health = @import("health.zig");
+const apps_mod = @import("apps.zig");
+const installer = @import("installer.zig");
 const update_checker = @import("update/checker.zig");
 const update_release = @import("update/release.zig");
 const docker = @import("integrations/docker.zig");
@@ -43,6 +45,7 @@ pub const App = struct {
     alerts: alerts_mod.Engine = .{},
     updates: update_checker.Checker = .{},
     tasks: ?*Io.Group = null,
+    installs: installer.Installer = .{},
     health: health.Monitor = .{},
     totp_last: std.AutoHashMapUnmanaged(u32, u64) = .empty,
     totp_mutex: Io.Mutex = .init,
@@ -273,6 +276,7 @@ pub fn dispatch(app: *App, io: Io, ctx: Ctx, body: []const u8, s: *Scratch) Repl
         app.record(io, ctx.now_s, userName(app, sess), "auth.logout", true, ctx.ip_text);
         return .{ .status = .ok, .body = "{\"ok\":true}", .set_cookie = cookie(app, s, "", 0) };
     }
+    if (std.mem.eql(u8, ctx.path, "/api/v1/apps") or std.mem.startsWith(u8, ctx.path, "/api/v1/apps/")) return appsRoute(app, io, ctx, body, s);
     if (std.mem.startsWith(u8, ctx.path, "/api/v1/docker/")) return dockerRoute(app, io, ctx, s);
     if (std.mem.startsWith(u8, ctx.path, "/api/v1/services")) return serviceRoute(app, io, ctx, s);
     if (get) if (assets.find(ctx.path)) |a| {
@@ -304,6 +308,122 @@ fn queryInt(query: []const u8, name: []const u8) ?usize {
         if (std.mem.eql(u8, pair[0..eq], name)) return std.fmt.parseInt(usize, pair[eq + 1 ..], 10) catch null;
     }
     return null;
+}
+
+fn badInstall(s: *Scratch, comptime fmt: []const u8, args: anytype) Reply {
+    const b = std.fmt.bufPrint(&s.body, "{{\"error\":\"" ++ fmt ++ "\"}}", args) catch return err_bad;
+    return .{ .status = .bad_request, .body = b };
+}
+
+fn appsRoute(app: *App, io: Io, ctx: Ctx, body: []const u8, s: *Scratch) Reply {
+    const sess = currentSession(app, io, ctx) orelse return err_unauth;
+    const rest = ctx.path["/api/v1/apps".len..];
+
+    var arena: std.heap.ArenaAllocator = .init(app.gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    if (rest.len == 0) {
+        if (ctx.method != .GET and ctx.method != .HEAD) return err_method;
+        var states: [apps_mod.catalog.len]apps_mod.InstalledState = @splat(.{});
+        var dstate: []const u8 = "ok";
+        if (app.docker) |client| {
+            if (docker.listAppContainers(client, a)) |list| {
+                for (list) |c| for (&apps_mod.catalog, 0..) |ca, i| {
+                    if (!std.mem.eql(u8, ca.id, c.app)) continue;
+                    states[i].total += 1;
+                    if (std.mem.eql(u8, c.state, "running")) states[i].running += 1;
+                };
+            } else |_| dstate = "down";
+        } else dstate = "off";
+        var w: Io.Writer = .fixed(&s.big);
+        apps_mod.writeCatalog(&w, &states, dstate) catch return err_internal;
+        return .{ .status = .ok, .body = w.buffered() };
+    }
+
+    if (sess.role != .admin) return err_forbidden;
+
+    if (std.mem.eql(u8, rest, "/jobs")) {
+        if (ctx.method != .GET) return err_method;
+        var jobs: [installer.max_jobs]installer.Job = undefined;
+        app.installs.copy(io, &jobs);
+        var w: Io.Writer = .fixed(&s.big);
+        installer.writeJobs(&w, &jobs) catch return err_internal;
+        return .{ .status = .ok, .body = w.buffered() };
+    }
+
+    const client = app.docker orelse return err_docker_off;
+
+    if (std.mem.eql(u8, rest, "/install")) {
+        if (ctx.method != .POST) return err_method;
+        if (!csrfOk(sess, ctx)) return err_forbidden;
+        const Req = struct { id: []const u8, port: ?u16 = null, paths: ?std.json.ArrayHashMap([]const u8) = null, lan_only: bool = false };
+        const req = std.json.parseFromSliceLeaky(Req, a, body, .{ .ignore_unknown_fields = true }) catch return err_bad;
+        const ap = apps_mod.find(req.id) orelse return err_not_found;
+
+        var kvs: std.ArrayList(apps_mod.KeyValue) = .empty;
+        if (req.paths) |m| {
+            var it = m.map.iterator();
+            while (it.next()) |e| kvs.append(a, .{ .key = e.key_ptr.*, .value = e.value_ptr.* }) catch return err_internal;
+        }
+
+        const task = app.gpa.create(installer.Task) catch return err_internal;
+        task.arena = .init(app.gpa);
+        const planned = apps_mod.plan(task.arena.allocator(), io, ap, .{ .port = req.port, .paths = kvs.items, .lan_only = req.lan_only }) catch |e| {
+            task.arena.deinit();
+            app.gpa.destroy(task);
+            return switch (e) {
+                error.MissingPath => badInstall(s, "choose a folder for this app first", .{}),
+                error.BadPath => badInstall(s, "that folder is not allowed: use a plain absolute path such as /srv/media, not a system folder", .{}),
+                error.BadPort => badInstall(s, "that port is not allowed: use 1024 or higher", .{}),
+                error.OutOfMemory => err_internal,
+            };
+        };
+        const tasks = app.tasks orelse {
+            task.arena.deinit();
+            app.gpa.destroy(task);
+            return .{ .status = .service_unavailable, .body = "{\"error\":\"the server is not ready for installs yet\"}" };
+        };
+        const slot = app.installs.begin(io, ap, planned, ctx.now_s) orelse {
+            task.arena.deinit();
+            app.gpa.destroy(task);
+            return .{ .status = .conflict, .body = "{\"error\":\"this app is already being installed, or too many installs are running\"}" };
+        };
+        task.* = .{ .gpa = app.gpa, .arena = task.arena, .installer = &app.installs, .slot = slot, .client = client, .app = ap, .plan = planned };
+        tasks.concurrent(io, installer.run, .{ io, task }) catch {
+            app.installs.update(io, slot, .failed, 0, "could not start the install");
+            installer.destroyTask(task);
+            return err_internal;
+        };
+        app.recordTarget(io, ctx.now_s, userName(app, sess), "app.install", ap.id, true, ctx.ip_text);
+        const b = std.fmt.bufPrint(&s.body, "{{\"ok\":true,\"app\":\"{s}\"}}", .{ap.id}) catch return err_internal;
+        return .{ .status = .accepted, .body = b };
+    }
+
+    if (std.mem.endsWith(u8, rest, "/remove")) {
+        if (ctx.method != .POST) return err_method;
+        if (!csrfOk(sess, ctx)) return err_forbidden;
+        const id = rest[1 .. rest.len - "/remove".len];
+        const ap = apps_mod.find(id) orelse return err_not_found;
+        const list = docker.listAppContainers(client, a) catch |e| return dockerFailure(e);
+        var removed: usize = 0;
+        for (list) |c| {
+            if (!std.mem.eql(u8, c.app, ap.id)) continue;
+            const r = docker.removeContainer(client, a, c.name) catch |e| {
+                app.recordTarget(io, ctx.now_s, userName(app, sess), "app.remove", ap.id, false, ctx.ip_text);
+                return dockerFailure(e);
+            };
+            if (r == .done) removed += 1;
+        }
+        if (!ap.host_net) {
+            const net = std.fmt.allocPrint(a, "nodos-{s}", .{ap.id}) catch return err_internal;
+            docker.removeNetwork(client, a, net) catch {};
+        }
+        app.recordTarget(io, ctx.now_s, userName(app, sess), "app.remove", ap.id, true, ctx.ip_text);
+        if (removed == 0) return .{ .status = .not_found, .body = "{\"error\":\"this app is not installed\"}" };
+        return .{ .status = .ok, .body = "{\"ok\":true}" };
+    }
+    return err_not_found;
 }
 
 fn dockerRoute(app: *App, io: Io, ctx: Ctx, s: *Scratch) Reply {
@@ -1174,6 +1294,46 @@ test "storage health route needs a session and reports what the monitor saw" {
     al.cookie_token = issued.token;
     const ar = dispatch(&app, io, al, "", &s);
     try std.testing.expect(std.mem.find(u8, ar.body, "raid_problem") != null);
+}
+
+test "app routes: catalog for any session, everything else admin only with csrf and validation" {
+    const io = std.testing.io;
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var app = try testApp(arena.allocator());
+    defer app.deinit(io);
+    app.docker = .{ .io = io, .socket_path = if (@import("builtin").os.tag == .windows) "C:\\Windows\\Temp\\nodos-none.sock" else "/tmp/nodos-none.sock" };
+    var s: Scratch = .{};
+    try std.testing.expectEqual(http.Status.unauthorized, dispatch(&app, io, testCtx(.GET, "/api/v1/apps"), "", &s).status);
+
+    const viewer = try app.sessions.create(app.gpa, io, 2, .viewer, 1000);
+    var v = testCtx(.GET, "/api/v1/apps");
+    v.cookie_token = viewer.token;
+    const cat = dispatch(&app, io, v, "", &s);
+    try std.testing.expectEqual(http.Status.ok, cat.status);
+    try std.testing.expect(std.mem.find(u8, cat.body, "\"id\":\"jellyfin\"") != null);
+    try std.testing.expect(std.mem.find(u8, cat.body, "\"docker\":\"down\"") != null);
+
+    var vi = testCtx(.POST, "/api/v1/apps/install");
+    vi.cookie_token = viewer.token;
+    vi.csrf = viewer.csrf;
+    try std.testing.expectEqual(http.Status.forbidden, dispatch(&app, io, vi, "{\"id\":\"memos\"}", &s).status);
+    v.path = "/api/v1/apps/jobs";
+    try std.testing.expectEqual(http.Status.forbidden, dispatch(&app, io, v, "", &s).status);
+
+    const admin = try app.sessions.create(app.gpa, io, 1, .admin, 1000);
+    var ai = testCtx(.POST, "/api/v1/apps/install");
+    ai.cookie_token = admin.token;
+    try std.testing.expectEqual(http.Status.forbidden, dispatch(&app, io, ai, "{\"id\":\"memos\"}", &s).status);
+    ai.csrf = admin.csrf;
+    try std.testing.expectEqual(http.Status.bad_request, dispatch(&app, io, ai, "not json", &s).status);
+    try std.testing.expectEqual(http.Status.not_found, dispatch(&app, io, ai, "{\"id\":\"nope\"}", &s).status);
+    try std.testing.expectEqual(http.Status.bad_request, dispatch(&app, io, ai, "{\"id\":\"jellyfin\"}", &s).status);
+    try std.testing.expectEqual(http.Status.bad_request, dispatch(&app, io, ai, "{\"id\":\"jellyfin\",\"paths\":{\"media\":\"/etc\"}}", &s).status);
+    try std.testing.expectEqual(http.Status.bad_request, dispatch(&app, io, ai, "{\"id\":\"memos\",\"port\":22}", &s).status);
+    var jobs = testCtx(.GET, "/api/v1/apps/jobs");
+    jobs.cookie_token = admin.token;
+    try std.testing.expectEqual(http.Status.ok, dispatch(&app, io, jobs, "", &s).status);
 }
 
 test "settings are admin only and carry no secrets" {

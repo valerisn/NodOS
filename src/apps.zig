@@ -760,9 +760,11 @@ pub fn categoryLabel(c: Category) []const u8 {
 
 pub const InstalledState = struct { running: usize = 0, total: usize = 0 };
 
-pub fn writeCatalog(w: *Io.Writer, states: []const InstalledState) Io.Writer.Error!void {
+pub fn writeCatalog(w: *Io.Writer, states: []const InstalledState, docker: []const u8) Io.Writer.Error!void {
     var j: std.json.Stringify = .{ .writer = w };
     try j.beginObject();
+    try j.objectField("docker");
+    try j.write(docker);
     try j.objectField("apps");
     try j.beginArray();
     for (&catalog, 0..) |a, i| {
@@ -973,7 +975,7 @@ test "optional folders are skipped when empty" {
 test "catalog json parses" {
     var out: Io.Writer.Allocating = .init(std.testing.allocator);
     defer out.deinit();
-    try writeCatalog(&out.writer, &.{});
+    try writeCatalog(&out.writer, &.{}, "ok");
     const v = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, out.written(), .{});
     defer v.deinit();
     try std.testing.expectEqual(catalog.len, v.value.object.get("apps").?.array.items.len);
