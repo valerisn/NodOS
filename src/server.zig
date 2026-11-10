@@ -826,6 +826,23 @@ fn reaper(io: Io, pool: *Pool) Io.Cancelable!void {
     }
 }
 
+// Cancelling tasks has hung before (see the health monitor fix). A hung stop
+// would make systemd wait for its timeout and then SIGKILL, so after a grace
+// period just leave. Nothing here needs a clean flush: the files are written
+// atomically and the audit log is append-only.
+fn armExitWatchdog() void {
+    if (builtin.os.tag != .linux) return;
+    const t = std.Thread.spawn(.{}, struct {
+        fn go() void {
+            const ts: std.os.linux.timespec = .{ .sec = 4, .nsec = 0 };
+            _ = std.os.linux.nanosleep(&ts, null);
+            log.warn("shutdown took too long, exiting", .{});
+            std.process.exit(0);
+        }
+    }.go, .{}) catch return;
+    t.detach();
+}
+
 pub fn run(io: Io, app: *App) !void {
     const addr = try Io.net.IpAddress.parse(app.cfg.listen, app.cfg.port);
     var listener = try addr.listen(io, .{ .reuse_address = true });
@@ -863,6 +880,7 @@ pub fn run(io: Io, app: *App) !void {
         const stream = listener.accept(io) catch |err| switch (err) {
             error.Canceled, error.SocketNotListening => {
                 log.info("shutting down", .{});
+                armExitWatchdog();
                 return;
             },
             else => {
