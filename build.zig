@@ -9,6 +9,8 @@ pub fn build(b: *std.Build) void {
     opts.addOption([]const u8, "version", b.option([]const u8, "build-version", "Override the compiled-in version (testing only)") orelse zon.version);
     opts.addOption(bool, "fake_host", b.option(bool, "fake-host", "Serve synthetic host data (development only)") orelse false);
 
+    opts.addOption(u32, "fuzz_iterations", b.option(u32, "fuzz-iterations", "Rounds per randomized robustness test (default 3000)") orelse 3000);
+
     const strip = b.option(bool, "strip", "Strip debug info from the binary");
 
     const mod = b.addModule("nodos", .{

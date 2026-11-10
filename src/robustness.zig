@@ -10,7 +10,13 @@ const audit = @import("audit.zig");
 const server = @import("server.zig");
 const cli = @import("cli.zig");
 
-const iterations = 3000;
+const iterations = @import("build_options").fuzz_iterations;
+const update_release = @import("update/release.zig");
+const update_version = @import("update/version.zig");
+const update_verify = @import("update/verify.zig");
+const update_extract = @import("update/extract.zig");
+const updater = @import("update/updater.zig");
+const notify = @import("notify.zig");
 
 fn randomBytes(rng: std.Random, buf: []u8) []u8 {
     const len = rng.uintLessThan(usize, buf.len + 1);
@@ -146,6 +152,66 @@ test "docker response and payload parsers survive garbage" {
             docker.writeLogs(a, &w, text, 50) catch {};
         } else |_| {}
         _ = docker.validRef(randomBytes(rng, &buf));
+    }
+}
+
+test "docker images and stats parsers survive garbage" {
+    var p = prng(21);
+    const rng = p.random();
+    var buf: [1024]u8 = undefined;
+    const images = "[{\"Id\":\"sha256:aabbccddeeff\",\"RepoTags\":[\"nginx:1\"],\"Size\":5,\"Created\":1},{\"Id\":\"x\",\"RepoTags\":null}]";
+    const stats = "{\"cpu_stats\":{\"cpu_usage\":{\"total_usage\":9},\"system_cpu_usage\":99,\"online_cpus\":2},\"precpu_stats\":{\"cpu_usage\":{\"total_usage\":3},\"system_cpu_usage\":10},\"memory_stats\":{\"usage\":5,\"limit\":9,\"stats\":{\"cache\":1}},\"pids_stats\":{\"current\":1},\"networks\":{\"eth0\":{\"rx_bytes\":1,\"tx_bytes\":2}}}";
+    for (0..iterations) |i| {
+        var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const noise = i % 4 == 0;
+        _ = docker.parseImages(a, if (noise) randomBytes(rng, &buf) else mutate(rng, images, &buf)) catch {};
+        if (docker.parseStats(a, if (noise) randomBytes(rng, &buf) else mutate(rng, stats, &buf))) |st| {
+            if (st.cpu_percent) |c| try std.testing.expect(!std.math.isNan(c) and c >= 0);
+        } else |_| {}
+    }
+}
+
+test "update-side parsers survive garbage" {
+    var p = prng(22);
+    const rng = p.random();
+    var buf: [1024]u8 = undefined;
+    const meta = "{\"tag_name\":\"v0.2.0\",\"draft\":false,\"prerelease\":false,\"published_at\":\"2026-11-09T05:00:01Z\",\"html_url\":\"https://x.test/r\"}";
+    const sums = "0000000000000000000000000000000000000000000000000000000000000000  nodos-v0.2.0-x86_64-linux.tar.gz\n";
+    const state = "bad=v1.2.3\nbad=v9.9.9\n";
+    const tgz = @embedFile("update/testdata/sample.tar.gz");
+    var tgz_buf: [4096]u8 = undefined;
+    for (0..iterations) |i| {
+        var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const noise = i % 4 == 0;
+        _ = update_release.parse(a, if (noise) randomBytes(rng, &buf) else mutate(rng, meta, &buf)) catch {};
+        _ = update_release.parseTimestamp(randomBytes(rng, buf[0..40]));
+        _ = update_release.urlAllowed(randomBytes(rng, &buf));
+        _ = update_version.Version.parse(randomBytes(rng, buf[0..40])) catch {};
+        _ = update_verify.hashFor(if (noise) randomBytes(rng, &buf) else mutate(rng, sums, &buf), "nodos-v0.2.0-x86_64-linux.tar.gz") catch {};
+        _ = update_verify.verifySignature(randomBytes(rng, buf[0..64]), randomBytes(rng, buf[64..300]), randomBytes(rng, buf[300..400])) catch {};
+        _ = updater.stateHasBad(if (noise) randomBytes(rng, &buf) else mutate(rng, state, &buf), "v9.9.9");
+        _ = updater.stateWithBad(a, randomBytes(rng, &buf), "v1.0.0") catch {};
+        // archives are signed before they are unpacked, but a bad one must still never crash us
+        _ = update_extract.binaryFromTarGz(a, if (noise) randomBytes(rng, &tgz_buf) else mutate(rng, tgz, &tgz_buf)) catch {};
+    }
+}
+
+test "webhook urls and bodies survive garbage" {
+    var p = prng(23);
+    const rng = p.random();
+    var buf: [700]u8 = undefined;
+    for (0..iterations) |_| {
+        _ = notify.urlOk(randomBytes(rng, &buf));
+        _ = notify.urlOk(mutate(rng, "https://ntfy.sh/topic", &buf));
+        var ev: @import("alerts.zig").Event = .{ .what = .raised, .alert = .{ .kind = .disk_high, .level = .warn, .value = 1, .since_s = 0 } };
+        ev.alert.subject.set(randomBytes(rng, buf[0..60]));
+        var out: [1024]u8 = undefined;
+        var w: Io.Writer = .fixed(&out);
+        notify.writePayload(&w, randomBytes(rng, buf[100..160]), ev) catch {};
     }
 }
 
