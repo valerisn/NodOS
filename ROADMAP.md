@@ -54,7 +54,8 @@ implemented and tested.
 - [x] Security self-review written (docs/security); independent review and fuzzing still open
 - [x] Performance measured on Linux against the budget (CI step, numbers in docs/development/performance.md); long soak still to do
 - [x] Install docs, hardened systemd unit and installer; CI installs and starts the service on Ubuntu (not yet tried on a real home server)
-- [ ] Signed release builds, first public release
+- [x] Update notice, `nodos update` with signature verification, atomic swap, health check and automatic rollback, opt-in auto-update (tested end to end on Linux under systemd)
+- [ ] Generate the release signing key (`scripts/release-keygen.sh`, needs the maintainer) and cut the first signed release
 
 ## Later
 

@@ -47,6 +47,10 @@ into the binary.
 - **Docker**: list containers, read logs, start, stop and restart.
 - **systemd services**: status, logs, start, stop and restart for an allowlist
   of units you choose.
+- **Updates**: a notice in the dashboard when a new release exists, and
+  `sudo nodos update` to install it: signature and checksum verified, health
+  checked after the restart, rolled back automatically if it does not come up.
+  An opt-in auto-update exists; read the warning before using it.
 - **Accounts**: argon2id passwords, admin and viewer roles, sessions, CSRF
   protection, login throttling, and an append-only audit log of everything
   that changes something.
@@ -73,6 +77,13 @@ Then open `http://127.0.0.1:8080` (through an SSH tunnel, or a TLS reverse
 proxy for anything else). The [installation guide](docs/installation/README.md)
 covers TLS with Caddy or nginx, Docker access, service control with polkit,
 upgrading and uninstalling.
+
+## Privacy
+
+NodOS makes one outbound connection: about every twelve hours it asks GitHub
+whether a newer release exists, sending only a `nodos/<version>` User-Agent.
+Set `update_check = false` to turn that off. Nothing about your machine is ever
+sent anywhere.
 
 ## Security in one paragraph
 

@@ -3,6 +3,24 @@
 The pipeline is tested. A manual run of the Release workflow does everything
 except publish, so rehearse before tagging.
 
+## One-time setup: the signing key
+
+Releases are signed, and `nodos update` refuses anything unsigned, so do this
+before the first release:
+
+```sh
+bash scripts/release-keygen.sh
+git add src/update/signing.pub && git commit -m "Publish the release signing public key"
+```
+
+It builds the small `release-sign` tool, makes a key pair, stores the secret in
+GitHub as the `NODOS_SIGNING_KEY` Actions secret, writes a backup to
+`~/.nodos/release-signing-key.txt` (put that in a password manager; GitHub
+cannot show the secret again), and writes the public key to
+`src/update/signing.pub`, which is compiled into every build. The release
+workflow refuses to publish a tag without the secret and checks its signature
+against `signing.pub` before uploading.
+
 ## Rehearse
 
 ```sh
@@ -10,6 +28,7 @@ gh workflow run release.yml --ref main
 gh run watch
 gh run download <run-id> -n nodos-release-files -D /tmp/nodos-release
 sha256sum -c /tmp/nodos-release/SHA256SUMS   # run inside that directory
+# once signing is set up the artifact also holds SHA256SUMS.sig
 ```
 
 Check the tarball has the binary, `scripts/install.sh`, `packaging/` and the

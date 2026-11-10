@@ -136,12 +136,82 @@ sudo install -m 0644 packaging/50-nodos.rules.example /etc/polkit-1/rules.d/50-n
 sudoedit /etc/polkit-1/rules.d/50-nodos.rules   # list your units
 ```
 
-## Upgrading
+## Updating
 
-Build or download the new binary and run `sudo scripts/install.sh` again. It
-replaces the binary and unit file, keeps your config and data, and doesn't
-restart the service, so finish with `sudo systemctl restart nodos`. Everyone is
-signed out, because sessions live in memory.
+NodOS checks for new releases and tells you in the dashboard. Installing one is
+a command you run:
+
+```sh
+nodos update --check      # just look; exit status 10 means an update is waiting
+sudo nodos update         # download, verify, install, restart
+sudo nodos update --rollback
+```
+
+What `sudo nodos update` does, in order:
+
+1. asks the release server for the latest release
+2. downloads the tarball, `SHA256SUMS` and its signature
+3. checks the Ed25519 signature, then the checksum. Anything that does not
+   verify is refused and nothing on disk changes
+4. unpacks the binary next to the installed one and runs it once, insisting it
+   reports exactly the version the signed release names
+5. keeps your current binary as `nodos.previous`, then swaps the new one in
+   with a single atomic rename
+6. restarts the service and waits up to 30 seconds for it to report the new
+   version. If it doesn't, the old binary is put back, the service is restarted
+   again, and that version is remembered as bad so it is not tried again
+   automatically
+
+Everyone is signed out afterwards, because sessions live in memory.
+`sudo nodos update --rollback` swaps the previous binary back in, and running it
+twice returns to where you started.
+
+**The web interface never installs anything.** The server runs as an
+unprivileged user and can only tell you an update exists. Installing needs root,
+and only you, at a terminal, do that.
+
+Releases are signed with a key whose public half is compiled into the binary.
+If you run your own mirror signed with your own key, pass `--pubkey HEX`; see
+[configuration](../configuration/README.md) for `update_mirror`.
+
+### Turning the update check off
+
+```
+update_check = false
+```
+
+The check is the only outbound connection NodOS makes: one HTTPS request to
+GitHub about every twelve hours, carrying a `User-Agent` of `nodos/<version>`
+and nothing else. GitHub sees your IP address, as it would for any download.
+Setting `update_check = false` stops it, and `nodos update` still works when you
+run it yourself.
+
+### Automatic updates (probably don't)
+
+```sh
+sudo nodos update --auto status
+sudo nodos update --auto on --yes     # without --yes it only prints the warning
+sudo nodos update --auto off
+```
+
+This enables a systemd timer that runs once a day. **It is off by default and
+we recommend leaving it off.** Software that changes itself while nobody is
+watching can break a server at 3 am, and if a release turns out to be broken
+it will be installed on your machine anyway until the maintainers notice and
+pull it.
+
+What is done to make it less risky:
+
+- only patch releases of the version you already run (0.1.2 to 0.1.3, never
+  0.1.x to 0.2.0); bigger jumps wait for you
+- a release must be at least 3 days old, so a bad one is usually pulled first
+- prereleases are never installed
+- the same signature and checksum checks as a manual update
+- the new version has to come up healthy, or it is rolled back and added to a
+  skip list
+
+It is still not risk free. Read the changelog and run `sudo nodos update`
+yourself when it suits you; that is the safer habit.
 
 ## Uninstalling
 

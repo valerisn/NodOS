@@ -59,6 +59,28 @@ A service shows "not installed" when systemd has no unit with that name.
 
 Reading the journal needs the `systemd-journal` group for the `nodos` user.
 
+## Updating
+
+`nodos update` says it has no release signing key: this binary was built
+without one, as development builds are. Official release binaries include it.
+
+`the release signature is NOT valid`: the download was corrupted or tampered
+with, or the release was signed with a different key than this binary trusts.
+Nothing was changed. Try again later; if it persists, open a private security
+report.
+
+`the release server has no published release yet`: there is no release to
+install, or the address is wrong (check `update_mirror`).
+
+An update installed but the service did not start: it was rolled back
+automatically and the version is on a skip list in
+`/var/lib/nodos/update-state`. See `journalctl -u nodos -e` for why, and remove
+the line to try again, or use `sudo nodos update --force`.
+
+The dashboard never shows an update notice: the check runs 30 seconds after
+start and then twice a day, needs outbound HTTPS, and is off when
+`update_check = false`.
+
 ## Reporting a bug
 
 Open an issue with the output of `nodos version`, your OS, and the relevant

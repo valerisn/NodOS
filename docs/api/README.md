@@ -123,6 +123,23 @@ Raised, escalated and cleared alerts are written to the audit log as actor
 `system` and to the process log. The same list arrives on the stream as an
 `alerts` event whenever it changes. Thresholds are fixed for now.
 
+### `GET /api/v1/update`
+
+Requires a session. Whether a newer release exists, as last seen by the
+background check:
+
+```json
+{"current": "0.1.0", "enabled": true, "checked": 1794216317, "failed": false,
+ "available": true, "latest": "v0.2.0", "page": "https://github.com/...",
+ "command": "sudo nodos update"}
+```
+
+`enabled` is false when the config has `update_check = false`. `failed` means
+the last attempt could not reach the release server; an earlier good answer is
+kept. `checked` is 0 until the first check, which runs 30 seconds after the
+server starts. This endpoint only reports: nothing in the web interface can
+install an update.
+
 ### `GET /api/v1/audit?limit=N`
 
 Admin only. The newest audit entries first, `limit` 1 to 200 (default 100):

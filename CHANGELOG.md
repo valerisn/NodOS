@@ -39,6 +39,18 @@ First public release is not cut yet; everything here is on `main`.
 - Embedded in the binary, no build step: sign in, overview with live strip
   charts, storage, network, Docker, services and audit log. Dark and light.
 
+**Updates**
+- A dashboard notice when a newer release exists (checked about every 12 hours,
+  can be turned off with `update_check = false`), and `GET /api/v1/update`.
+- `nodos update [--check | --rollback | --auto on|off|status]`: Ed25519
+  signature and checksum verification, a sanity run of the new binary, an
+  atomic swap that keeps the old binary, a health check after the restart and
+  automatic rollback with the failed version remembered.
+- Opt-in automatic updates through a systemd timer, limited to patch releases
+  at least three days old, with a prominent warning.
+- `release-sign` tool and `scripts/release-keygen.sh` for the maintainer; the
+  release workflow signs `SHA256SUMS` and refuses to publish unsigned.
+
 **Packaging and operations**
 - Hardened systemd unit, installer script, example config and polkit rule.
 - Installation, configuration, API, security, troubleshooting and development docs.

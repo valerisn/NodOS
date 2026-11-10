@@ -23,6 +23,16 @@ secure_cookies = true
 # addresses. Only ever name a proxy you run yourself.
 # trusted_proxy = 127.0.0.1
 
+# Look for new NodOS releases about every 12 hours and show a notice in the
+# dashboard. This is the only outbound connection NodOS makes: an HTTPS request
+# to GitHub carrying a "nodos/<version>" User-Agent and nothing else. Installing
+# is always a command you run (sudo nodos update); this only tells you.
+# update_check = true
+
+# Fetch releases from your own mirror instead of GitHub. A directory served over
+# https holding latest.json and download/<tag>/.
+# update_mirror = https://mirror.example.lan/nodos
+
 # systemd units NodOS may show and control (no ".service"). An allowlist.
 # Starting and stopping also needs a polkit rule, see the installation guide.
 # services = ssh, nginx

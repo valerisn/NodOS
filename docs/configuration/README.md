@@ -18,6 +18,8 @@ line number.
 | `log_level` | `info` | `err`, `warn`, `info` or `debug`. Logs go to stderr |
 | `secure_cookies` | `true` | Mark session cookies `Secure`. Set `false` only for plain-HTTP LANs |
 | `trusted_proxy` | empty | IP of a reverse proxy whose `X-Forwarded-For` header is believed (rightmost entry). Empty ignores the header |
+| `update_check` | `true` | Look for new releases about every 12 hours and show a notice. The only outbound connection NodOS makes. `false` disables it |
+| `update_mirror` | empty | Fetch releases from this URL instead of GitHub: a directory holding `latest.json` and `download/<tag>/`. https only, or http to this machine |
 | `services` | empty | Comma separated systemd units NodOS may show and control, without `.service`. Empty turns the feature off |
 | `docker_socket` | `/var/run/docker.sock` | Docker Engine socket, or `off`. See the warning below |
 | `sample_interval_ms` | `2000` | Metrics sampling interval, 500 to 60000. Unused until Phase 3 |

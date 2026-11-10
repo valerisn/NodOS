@@ -40,6 +40,7 @@ to widen, and visible afterwards.
 | Browser | CSP `default-src 'self'; frame-ancestors 'none'`, no inline script or style, `nosniff`, `X-Frame-Options: DENY`, `no-referrer`, `no-store`. The frontend builds DOM with text nodes, never `innerHTML` |
 | Availability | 256 connection cap, 15 second idle and stall cutoff, 16 stream cap, 10 second timeout on external commands |
 | Audit | Append-only JSON lines for logins (success, failure, throttled), logouts, every Docker and service action, and alerts. Never records passwords or tokens. Untrusted strings are JSON-escaped, so a hostile username cannot forge a line |
+| Updates | The server only reports that a release exists; installing is a root command run by a person. Releases need a valid Ed25519 signature (public key compiled in) and a matching checksum, the new binary must report the signed version, and a failed health check rolls back. Automatic updates are opt-in and limited to aged patch releases |
 | Host | Unprivileged user, `NoNewPrivileges`, `ProtectSystem=strict`, empty capability set, restricted address families, no writable paths except the data directory |
 
 ## Known limitations
@@ -65,17 +66,26 @@ These are real. None is hidden elsewhere.
    `nodos`; there is no live user management through the web interface.
 9. **Thresholds for alerts are fixed**, and alerts are in-app only. There is no
    outbound email or webhook, so an alert nobody is looking at is silent.
-10. **An idle-connection flood denies service while it lasts.** The server
+10. **The update system is a trust decision.** Anyone who can sign a release
+    can run code as root on every machine that installs it, so the signing key
+    is the most valuable secret in the project. It lives in a GitHub Actions
+    secret and one offline backup. If it leaks, rotate it with
+    `scripts/release-keygen.sh --rotate`; machines on the old key then have to
+    be reinstalled by hand. The metadata that names the latest release is not
+    signed, so a network attacker can hide an update or point at an older signed
+    release; the updater refuses to go backwards, but it cannot make you update.
+    The update check contacts GitHub (see the README for what is sent).
+11. **An idle-connection flood denies service while it lasts.** The server
     holds 256 connections; an attacker who keeps opening idle ones keeps them
     all busy, and each is only cut after 15 seconds. It recovers by itself as
     soon as the attacker stops (verified in CI), but while it continues, real
     users are locked out. Put rate limiting in the reverse proxy. On Windows
     (development only) the cutoff does not free slots until the client lets go.
-11. **The standard library is young.** `std.http.Server` crashed on one class of
+12. **The standard library is young.** `std.http.Server` crashed on one class of
     input (fixed with a guard). More such edges are likely. Parsers and the
     login path get mutation tests on every build, but there has been no long
     fuzzing campaign.
-12. **No independent review or penetration test has been done.**
+13. **No independent review or penetration test has been done.**
 
 ## Self-review checklist (2026-11-09)
 
