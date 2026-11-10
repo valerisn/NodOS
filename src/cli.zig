@@ -15,6 +15,12 @@ pub const Command = enum {
     user_list,
     user_totp,
     user_totp_off,
+    token_add,
+    token_list,
+    token_remove,
+    server_add,
+    server_list,
+    server_remove,
 };
 
 pub const Parsed = struct {
@@ -25,6 +31,7 @@ pub const Parsed = struct {
     update: updater.Options = .{},
     path: ?[]const u8 = null,
     force: bool = false,
+    server_url: ?[]const u8 = null,
 };
 
 pub const ParseError = error{
@@ -54,6 +61,20 @@ const user_sub = [_]struct { name: []const u8, cmd: Command, takes_name: bool }{
     .{ .name = "totp-off", .cmd = .user_totp_off, .takes_name = true },
 };
 
+const SubCmd = struct { name: []const u8, cmd: Command, takes_name: bool };
+
+const token_sub = [_]SubCmd{
+    .{ .name = "add", .cmd = .token_add, .takes_name = true },
+    .{ .name = "list", .cmd = .token_list, .takes_name = false },
+    .{ .name = "remove", .cmd = .token_remove, .takes_name = true },
+};
+
+const server_sub = [_]SubCmd{
+    .{ .name = "add", .cmd = .server_add, .takes_name = true },
+    .{ .name = "list", .cmd = .server_list, .takes_name = false },
+    .{ .name = "remove", .cmd = .server_remove, .takes_name = true },
+};
+
 pub fn parse(args: []const []const u8) ParseError!Parsed {
     if (args.len == 0) return .{ .command = .help };
 
@@ -71,6 +92,23 @@ pub fn parse(args: []const []const u8) ParseError!Parsed {
             out.user_name = args[2];
             rest = args[3..];
         } else rest = args[2..];
+    } else if (std.mem.eql(u8, args[0], "token") or std.mem.eql(u8, args[0], "server")) {
+        if (args.len < 2) return error.UnknownCommand;
+        const table = if (args[0][0] == 't') &token_sub else &server_sub;
+        const sub = for (table) |s| {
+            if (std.mem.eql(u8, s.name, args[1])) break s;
+        } else return error.UnknownCommand;
+        out = .{ .command = sub.cmd };
+        if (sub.takes_name) {
+            if (args.len < 3) return error.MissingValue;
+            out.user_name = args[2];
+            rest = args[3..];
+        } else rest = args[2..];
+        if (out.command == .server_add) {
+            if (rest.len == 0) return error.MissingValue;
+            out.server_url = rest[0];
+            rest = rest[1..];
+        }
     } else if (for (top_level) |t| {
         if (std.mem.eql(u8, t.name, args[0])) break t;
     } else null) |t| {
@@ -101,7 +139,7 @@ pub fn parse(args: []const []const u8) ParseError!Parsed {
             out.force = true;
         } else if (out.command == .restore and out.path == null and rest[i].len > 0 and rest[i][0] != '-') {
             out.path = rest[i];
-        } else if (out.command == .user_add and std.mem.eql(u8, rest[i], "--role")) {
+        } else if ((out.command == .user_add or out.command == .token_add) and std.mem.eql(u8, rest[i], "--role")) {
             i += 1;
             if (i >= rest.len) return error.MissingValue;
             out.role = std.meta.stringToEnum(auth.Role, rest[i]) orelse return error.InvalidRole;
@@ -206,6 +244,24 @@ test "totp commands take a user" {
     try std.testing.expectEqualStrings("kea", p.user_name.?);
     try std.testing.expectEqual(Command.user_totp_off, (try parse(&.{ "user", "totp-off", "kea" })).command);
     try std.testing.expectError(error.MissingValue, parse(&.{ "user", "totp" }));
+}
+
+test "token and server commands" {
+    const t = try parse(&.{ "token", "add", "hub", "--role", "viewer", "--config", "/c" });
+    try std.testing.expectEqual(Command.token_add, t.command);
+    try std.testing.expectEqualStrings("hub", t.user_name.?);
+    try std.testing.expectEqual(@import("auth.zig").Role.viewer, t.role);
+    try std.testing.expectEqual(Command.token_list, (try parse(&.{ "token", "list" })).command);
+    try std.testing.expectEqual(Command.token_remove, (try parse(&.{ "token", "remove", "hub" })).command);
+    const s = try parse(&.{ "server", "add", "rack2", "http://10.0.0.7:8080" });
+    try std.testing.expectEqual(Command.server_add, s.command);
+    try std.testing.expectEqualStrings("rack2", s.user_name.?);
+    try std.testing.expectEqualStrings("http://10.0.0.7:8080", s.server_url.?);
+    try std.testing.expectError(error.MissingValue, parse(&.{ "server", "add", "rack2" }));
+    try std.testing.expectError(error.MissingValue, parse(&.{ "token", "add" }));
+    try std.testing.expectError(error.UnknownCommand, parse(&.{ "token", "nope" }));
+    try std.testing.expectError(error.UnknownCommand, parse(&.{"server"}));
+    try std.testing.expectEqual(Command.server_list, (try parse(&.{ "server", "list", "--config", "/c" })).command);
 }
 
 test "serve takes a config path" {

@@ -15,6 +15,9 @@ const totp = @import("totp.zig");
 const health = @import("health.zig");
 const apps_mod = @import("apps.zig");
 const installer = @import("installer.zig");
+const tokens_mod = @import("tokens.zig");
+const servers_mod = @import("servers.zig");
+const remote = @import("remote.zig");
 const update_checker = @import("update/checker.zig");
 const update_release = @import("update/release.zig");
 const docker = @import("integrations/docker.zig");
@@ -45,6 +48,9 @@ pub const App = struct {
     alerts: alerts_mod.Engine = .{},
     updates: update_checker.Checker = .{},
     tasks: ?*Io.Group = null,
+    tokens: tokens_mod.Tokens = .{},
+    servers: servers_mod.Servers = .{},
+    token_limiter: ratelimit.Limiter = .{},
     installs: installer.Installer = .{},
     health: health.Monitor = .{},
     totp_last: std.AutoHashMapUnmanaged(u32, u64) = .empty,
@@ -76,6 +82,7 @@ pub const App = struct {
         app.sessions.deinit(app.gpa);
         app.limiter.deinit(app.gpa);
         app.user_limiter.deinit(app.gpa);
+        app.token_limiter.deinit(app.gpa);
         app.totp_last.deinit(app.gpa);
         if (app.audit_log) |*a| a.close(io);
     }
@@ -162,6 +169,7 @@ pub const Ctx = struct {
     path: []const u8,
     query: []const u8 = "",
     cookie_token: ?[43]u8 = null,
+    bearer: ?[43]u8 = null,
     csrf: ?[43]u8 = null,
     client: ratelimit.Key,
     ip_text: []const u8,
@@ -241,6 +249,14 @@ pub fn dispatch(app: *App, io: Io, ctx: Ctx, body: []const u8, s: *Scratch) Repl
         health.writeJson(&w, &rep, have) catch return err_internal;
         return .{ .status = .ok, .body = w.buffered() };
     }
+    if (std.mem.eql(u8, ctx.path, "/api/v1/servers")) {
+        if (!get) return err_method;
+        _ = currentSession(app, io, ctx) orelse return err_unauth;
+        var w: Io.Writer = .fixed(&s.big);
+        servers_mod.writeJson(&w, &app.servers) catch return err_internal;
+        return .{ .status = .ok, .body = w.buffered() };
+    }
+    if (std.mem.startsWith(u8, ctx.path, "/api/v1/remote/")) return remoteRoute(app, io, ctx, body, s);
     if (std.mem.eql(u8, ctx.path, "/api/v1/settings")) {
         if (!get) return err_method;
         const sess = currentSession(app, io, ctx) orelse return err_unauth;
@@ -424,6 +440,53 @@ fn appsRoute(app: *App, io: Io, ctx: Ctx, body: []const u8, s: *Scratch) Reply {
         return .{ .status = .ok, .body = "{\"ok\":true}" };
     }
     return err_not_found;
+}
+
+const err_remote_down: Reply = .{ .status = .bad_gateway, .body = "{\"error\":\"that server is not reachable\"}" };
+const err_remote_slow: Reply = .{ .status = .gateway_timeout, .body = "{\"error\":\"that server did not answer in time\"}" };
+
+/// Passes a request on to another NodOS server using the token stored for it.
+/// The token is an admin token, so everything a viewer may not do is refused
+/// here, before anything leaves this machine.
+fn remoteRoute(app: *App, io: Io, ctx: Ctx, body: []const u8, s: *Scratch) Reply {
+    const sess = currentSession(app, io, ctx) orelse return err_unauth;
+    if (sess.api) return err_forbidden;
+    const rest = ctx.path["/api/v1/remote/".len..];
+    const slash = std.mem.findScalar(u8, rest, '/') orelse return err_not_found;
+    const srv = app.servers.find(rest[0..slash]) orelse return err_not_found;
+    const sub = rest[slash..];
+    if (remote.blocked(sub) or !remote.validSub(sub) or !remote.validQuery(ctx.query)) return err_bad;
+
+    const read = ctx.method == .GET;
+    if (sess.role != .admin) {
+        if (!read or !remote.viewerMayRead(sub)) return err_forbidden;
+    }
+    if (!read) {
+        if (ctx.method != .POST) return err_method;
+        if (!csrfOk(sess, ctx)) return err_forbidden;
+    }
+
+    var arena: std.heap.ArenaAllocator = .init(app.gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const payload: ?[]const u8 = if (read) null else body;
+    const res = remote.forward(a, io, srv.*, ctx.method, sub, ctx.query, payload, s.big.len) catch |e| {
+        if (!read) app.recordTarget(io, ctx.now_s, userName(app, sess), "remote.act", srv.name, false, ctx.ip_text);
+        return switch (e) {
+            error.TimedOut => err_remote_slow,
+            error.BadTarget => err_bad,
+            error.OutOfMemory => err_internal,
+            else => err_remote_down,
+        };
+    };
+    if (!read) {
+        var tbuf: [160]u8 = undefined;
+        const target = std.fmt.bufPrint(&tbuf, "{s} {s}", .{ srv.name, sub }) catch srv.name;
+        app.recordTarget(io, ctx.now_s, userName(app, sess), "remote.act", target, res.status >= 200 and res.status < 300, ctx.ip_text);
+    }
+    if (res.body.len > s.big.len) return err_remote_down;
+    @memcpy(s.big[0..res.body.len], res.body);
+    return .{ .status = @fromBackingInt(@intCast(res.status)), .body = s.big[0..res.body.len] };
 }
 
 fn dockerRoute(app: *App, io: Io, ctx: Ctx, s: *Scratch) Reply {
@@ -651,16 +714,32 @@ fn sessionInfo(app: *App, sess: auth.Session, ctx: Ctx, s: *Scratch) Reply {
 }
 
 fn userName(app: *App, sess: auth.Session) []const u8 {
+    if (sess.api) {
+        const idx = sess.user_id -% api_user_base;
+        if (idx < app.tokens.list.items.len) return app.tokens.list.items[idx].name;
+        return "api";
+    }
     for (app.users.list.items) |u| if (u.id == sess.user_id) return u.name;
     return "-";
 }
 
+const token_failure_limit: u16 = 60;
+const api_user_base: u32 = 1_000_000;
+
 fn currentSession(app: *App, io: Io, ctx: Ctx) ?auth.Session {
-    const tok = ctx.cookie_token orelse return null;
-    return app.sessions.lookup(io, &tok, ctx.now_s);
+    if (ctx.cookie_token) |tok| return app.sessions.lookup(io, &tok, ctx.now_s);
+    const b = ctx.bearer orelse return null;
+    if (app.tokens.list.items.len == 0) return null;
+    // a wrong token counts against the caller's address, a right one gives it back
+    if (!app.token_limiter.admit(app.gpa, io, ctx.client, token_failure_limit, ctx.now_s)) return null;
+    const t = app.tokens.lookup(&b) orelse return null;
+    app.token_limiter.refund(io, ctx.client);
+    const idx = (@intFromPtr(t) - @intFromPtr(app.tokens.list.items.ptr)) / @sizeOf(tokens_mod.Token);
+    return .{ .user_id = api_user_base + @as(u32, @intCast(idx)), .role = t.role, .csrf = @splat(0), .created_s = ctx.now_s, .last_seen_s = ctx.now_s, .api = true };
 }
 
 fn csrfOk(sess: auth.Session, ctx: Ctx) bool {
+    if (sess.api) return true;
     const presented = ctx.csrf orelse return false;
     return auth.SessionStore.csrfMatches(sess, &presented);
 }
@@ -948,6 +1027,9 @@ fn serveConnection(io: Io, app: *App, pool: *Pool, slot: *Slot, stream: Io.net.S
                 if (cookieValue(h.value, cookie_name)) |v| {
                     if (v.len == 43) ctx.cookie_token = v[0..43].*;
                 }
+            } else if (std.ascii.eqlIgnoreCase(h.name, "authorization")) {
+                const prefix = "Bearer ";
+                if (h.value.len == prefix.len + 43 and std.ascii.startsWithIgnoreCase(h.value, prefix)) ctx.bearer = h.value[prefix.len..][0..43].*;
             } else if (std.ascii.eqlIgnoreCase(h.name, csrf_header)) {
                 if (h.value.len == 43) ctx.csrf = h.value[0..43].*;
             }
@@ -1352,6 +1434,103 @@ test "app routes: catalog for any session, everything else admin only with csrf 
     var jobs = testCtx(.GET, "/api/v1/apps/jobs");
     jobs.cookie_token = admin.token;
     try std.testing.expectEqual(http.Status.ok, dispatch(&app, io, jobs, "", &s).status);
+}
+
+test "api tokens sign in without a cookie, with their role, and a wrong one fails" {
+    const io = std.testing.io;
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var app = try testApp(arena.allocator());
+    defer app.deinit(io);
+    var s: Scratch = .{};
+    const good = tokens_mod.generate(io);
+    const other = tokens_mod.generate(io);
+    try app.tokens.add(arena.allocator(), "hub", .admin, &good);
+    try app.tokens.add(arena.allocator(), "eye", .viewer, &other);
+
+    var ctx = testCtx(.GET, "/api/v1/settings");
+    ctx.bearer = good;
+    try std.testing.expectEqual(http.Status.ok, dispatch(&app, io, ctx, "", &s).status);
+    ctx.bearer = other;
+    try std.testing.expectEqual(http.Status.forbidden, dispatch(&app, io, ctx, "", &s).status);
+    ctx.bearer = tokens_mod.generate(io);
+    try std.testing.expectEqual(http.Status.unauthorized, dispatch(&app, io, ctx, "", &s).status);
+
+    // a token session needs no csrf token for a change, a cookie session does
+    var post_ctx = testCtx(.POST, "/api/v1/docker/containers/web/restart");
+    post_ctx.bearer = good;
+    app.docker = .{ .io = io, .socket_path = if (@import("builtin").os.tag == .windows) "C:\\Windows\\Temp\\nodos-none.sock" else "/tmp/nodos-none.sock" };
+    try std.testing.expect(dispatch(&app, io, post_ctx, "", &s).status != http.Status.forbidden);
+}
+
+test "a failing token cannot be guessed at without limit" {
+    const io = std.testing.io;
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var app = try testApp(arena.allocator());
+    defer app.deinit(io);
+    var s: Scratch = .{};
+    const real = tokens_mod.generate(io);
+    try app.tokens.add(arena.allocator(), "hub", .admin, &real);
+    var ctx = testCtx(.GET, "/api/v1/settings");
+    var tries: usize = 0;
+    while (tries < token_failure_limit + 20) : (tries += 1) {
+        ctx.bearer = tokens_mod.generate(io);
+        _ = dispatch(&app, io, ctx, "", &s);
+    }
+    ctx.bearer = real;
+    try std.testing.expectEqual(http.Status.unauthorized, dispatch(&app, io, ctx, "", &s).status);
+    ctx.client = @splat(9);
+    try std.testing.expectEqual(http.Status.ok, dispatch(&app, io, ctx, "", &s).status);
+}
+
+test "remote proxy: sessions only, viewers read the harmless paths, admins need csrf" {
+    const io = std.testing.io;
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var app = try testApp(arena.allocator());
+    defer app.deinit(io);
+    var s: Scratch = .{};
+    try app.servers.add(arena.allocator(), "rack2", "http://127.0.0.1:9", "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ");
+
+    try std.testing.expectEqual(http.Status.unauthorized, dispatch(&app, io, testCtx(.GET, "/api/v1/remote/rack2/system"), "", &s).status);
+    try std.testing.expectEqual(http.Status.unauthorized, dispatch(&app, io, testCtx(.GET, "/api/v1/servers"), "", &s).status);
+
+    const viewer = try app.sessions.create(app.gpa, io, 2, .viewer, 1000);
+    var v = testCtx(.GET, "/api/v1/remote/rack2/audit");
+    v.cookie_token = viewer.token;
+    try std.testing.expectEqual(http.Status.forbidden, dispatch(&app, io, v, "", &s).status);
+    v.path = "/api/v1/remote/rack2/docker/containers/web/logs";
+    try std.testing.expectEqual(http.Status.forbidden, dispatch(&app, io, v, "", &s).status);
+    v.path = "/api/v1/remote/rack2/system";
+    try std.testing.expectEqual(http.Status.bad_gateway, dispatch(&app, io, v, "", &s).status);
+    v.path = "/api/v1/remote/nope/system";
+    try std.testing.expectEqual(http.Status.not_found, dispatch(&app, io, v, "", &s).status);
+    v.path = "/api/v1/remote/rack2/remote/rack3/system";
+    try std.testing.expectEqual(http.Status.bad_request, dispatch(&app, io, v, "", &s).status);
+    v.path = "/api/v1/servers";
+    const list = dispatch(&app, io, v, "", &s);
+    try std.testing.expect(std.mem.find(u8, list.body, "\"name\":\"rack2\"") != null);
+    try std.testing.expect(std.mem.find(u8, list.body, "abcdefgh") == null);
+
+    var vp = testCtx(.POST, "/api/v1/remote/rack2/docker/containers/web/restart");
+    vp.cookie_token = viewer.token;
+    vp.csrf = viewer.csrf;
+    try std.testing.expectEqual(http.Status.forbidden, dispatch(&app, io, vp, "", &s).status);
+
+    const admin = try app.sessions.create(app.gpa, io, 1, .admin, 1000);
+    var ap = testCtx(.POST, "/api/v1/remote/rack2/docker/containers/web/restart");
+    ap.cookie_token = admin.token;
+    try std.testing.expectEqual(http.Status.forbidden, dispatch(&app, io, ap, "", &s).status);
+    ap.csrf = admin.csrf;
+    try std.testing.expectEqual(http.Status.bad_gateway, dispatch(&app, io, ap, "", &s).status);
+
+    // a token session cannot be used to relay through this server
+    const t = tokens_mod.generate(io);
+    try app.tokens.add(arena.allocator(), "hub", .admin, &t);
+    var tk = testCtx(.GET, "/api/v1/remote/rack2/system");
+    tk.bearer = t;
+    try std.testing.expectEqual(http.Status.forbidden, dispatch(&app, io, tk, "", &s).status);
 }
 
 test "settings are admin only and carry no secrets" {

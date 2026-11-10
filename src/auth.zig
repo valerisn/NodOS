@@ -33,6 +33,8 @@ pub const Session = struct {
     csrf: [32]u8,
     created_s: i64,
     last_seen_s: i64,
+    /// Signed in with an API token instead of a cookie: no CSRF, no user record.
+    api: bool = false,
 };
 
 pub const Issued = struct {

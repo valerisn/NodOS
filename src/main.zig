@@ -22,6 +22,14 @@ const usage =
     \\                               Turn two-factor login off for a user
     \\  update [--check] [--rollback] [--auto on|off|status] [--yes] [--config PATH]
     \\                               Check for, install or undo a release
+    \\  token add NAME [--role admin|viewer] [--config PATH]
+    \\                               Make an API token (printed once) so another NodOS can connect
+    \\  token list|remove NAME [--config PATH]
+    \\                               Show or revoke API tokens
+    \\  server add NAME URL [--config PATH]
+    \\                               Connect another NodOS server; its token is read from stdin
+    \\  server list|remove NAME [--config PATH]
+    \\                               Show or disconnect other servers
     \\  backup --out FILE [--force] [--config PATH]
     \\                               Save users and the audit log to a tar file
     \\  restore FILE [--force] [--config PATH]
@@ -71,6 +79,8 @@ pub fn main(init: std.process.Init) !void {
             try w.flush();
             if (code != 0) std.process.exit(code);
         },
+        .token_add, .token_list, .token_remove => try tokenCommand(init, cmd, w),
+        .server_add, .server_list, .server_remove => try serverCommand(init, cmd, w),
         .backup => try backupCommand(init, cmd, w),
         .restore => try restoreCommand(init, cmd, w),
         .user_add, .user_passwd, .user_remove, .user_list, .user_totp, .user_totp_off => try userCommand(init, cmd, w),
@@ -98,6 +108,8 @@ fn serve(init: std.process.Init, cmd: nodos.cli.Parsed) !void {
     var app = nodos.server.App.init(init.gpa, io, cfg, users) catch |err|
         fatal("startup failed: {s}", .{@errorName(err)});
     defer app.deinit(io);
+    app.tokens = nodos.tokens.load(io, arena, dir) catch |err| fatal("cannot load tokens: {s}", .{@errorName(err)});
+    app.servers = nodos.servers.load(io, arena, dir) catch |err| fatal("cannot load servers: {s}", .{@errorName(err)});
     app.audit_log = nodos.audit.Log.open(io, dir) catch |err|
         fatal("cannot open audit log: {s}", .{@errorName(err)});
 
@@ -180,6 +192,76 @@ fn userCommand(init: std.process.Init, cmd: nodos.cli.Parsed, w: *Io.Writer) !vo
     }
     nodos.users.save(io, dir, &users) catch |err| fatal("cannot save users: {s}", .{@errorName(err)});
     try w.writeAll("restart nodos for this to take effect on a running server\n");
+}
+
+fn tokenCommand(init: std.process.Init, cmd: nodos.cli.Parsed, w: *Io.Writer) !void {
+    const io = init.io;
+    const arena = init.arena.allocator();
+    const cfg = loadConfig(io, arena, cmd.config_path);
+    var dir = openDataDir(io, cfg.data_dir);
+    defer dir.close(io);
+    var tokens = nodos.tokens.load(io, arena, dir) catch |err| fatal("cannot load tokens: {s}", .{@errorName(err)});
+    switch (cmd.command) {
+        .token_list => {
+            if (tokens.list.items.len == 0) try w.writeAll("no tokens yet\n");
+            for (tokens.list.items) |t| try w.print("{s}\t{s}\n", .{ t.name, @tagName(t.role) });
+            return;
+        },
+        .token_add => {
+            const token = nodos.tokens.generate(io);
+            tokens.add(arena, cmd.user_name.?, cmd.role, &token) catch |err| switch (err) {
+                error.InvalidName => fatal("name must be 1-32 chars of a-z, 0-9, '-' or '_'", .{}),
+                error.DuplicateName => fatal("token '{s}' already exists", .{cmd.user_name.?}),
+                else => fatal("cannot add token: {s}", .{@errorName(err)}),
+            };
+            nodos.tokens.save(io, dir, &tokens) catch |err| fatal("cannot save tokens: {s}", .{@errorName(err)});
+            try w.print("token '{s}' ({s}) created. It is shown only now:\n\n  {s}\n\nOn the server that should connect to this one, run:\n  printf '%s\\n' '<the token>' | nodos server add NAME URL\nRestart nodos here for the token to work. Revoke it with: nodos token remove {s}\n", .{ cmd.user_name.?, @tagName(cmd.role), &token, cmd.user_name.? });
+        },
+        .token_remove => {
+            tokens.remove(cmd.user_name.?) catch fatal("no such token '{s}'", .{cmd.user_name.?});
+            nodos.tokens.save(io, dir, &tokens) catch |err| fatal("cannot save tokens: {s}", .{@errorName(err)});
+            try w.print("removed '{s}'. Restart nodos for it to stop working\n", .{cmd.user_name.?});
+        },
+        else => unreachable,
+    }
+}
+
+fn serverCommand(init: std.process.Init, cmd: nodos.cli.Parsed, w: *Io.Writer) !void {
+    const io = init.io;
+    const arena = init.arena.allocator();
+    const cfg = loadConfig(io, arena, cmd.config_path);
+    var dir = openDataDir(io, cfg.data_dir);
+    defer dir.close(io);
+    var servers = nodos.servers.load(io, arena, dir) catch |err| fatal("cannot load servers: {s}", .{@errorName(err)});
+    switch (cmd.command) {
+        .server_list => {
+            if (servers.list.items.len == 0) try w.writeAll("no other servers yet\n");
+            for (servers.list.items) |s| try w.print("{s}\t{s}\n", .{ s.name, s.url });
+            return;
+        },
+        .server_add => {
+            var in_buf: [512]u8 = undefined;
+            var stdin: Io.File.Reader = .init(.stdin(), io, &in_buf);
+            const line = (stdin.interface.takeDelimiter('\n') catch fatal("cannot read the token", .{})) orelse fatal("no token on stdin", .{});
+            const token = std.mem.trim(u8, line, " \r\t");
+            servers.add(arena, cmd.user_name.?, cmd.server_url.?, token) catch |err| switch (err) {
+                error.InvalidName => fatal("name must be 1-32 chars of a-z, 0-9, '-' or '_'", .{}),
+                error.InvalidUrl => fatal("address must look like http://host:8080 or https://host, with no path", .{}),
+                error.InvalidToken => fatal("that is not a NodOS token (43 characters from nodos token add)", .{}),
+                error.DuplicateName => fatal("server '{s}' already exists", .{cmd.user_name.?}),
+                error.TooMany => fatal("at most {d} servers", .{nodos.servers.max_servers}),
+                else => fatal("cannot add server: {s}", .{@errorName(err)}),
+            };
+            nodos.servers.save(io, dir, &servers) catch |err| fatal("cannot save servers: {s}", .{@errorName(err)});
+            try w.print("added '{s}'. Restart nodos to see it in the server list\n", .{cmd.user_name.?});
+        },
+        .server_remove => {
+            servers.remove(cmd.user_name.?) catch fatal("no such server '{s}'", .{cmd.user_name.?});
+            nodos.servers.save(io, dir, &servers) catch |err| fatal("cannot save servers: {s}", .{@errorName(err)});
+            try w.print("removed '{s}'. Restart nodos for it to disappear\n", .{cmd.user_name.?});
+        },
+        else => unreachable,
+    }
 }
 
 fn fileExists(io: Io, dir: Io.Dir, name: []const u8) bool {
