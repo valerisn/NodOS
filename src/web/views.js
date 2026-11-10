@@ -1,4 +1,4 @@
-import { get, post } from "./api.js";
+import { currentHost, get, getLocal, isRemote, post } from "./api.js";
 import { StripChart } from "./chart.js";
 import { bytes, bytesText, duration, level, percent, rate, rateText } from "./format.js";
 
@@ -614,6 +614,24 @@ export function auditView({ role }) {
   };
 }
 
+function serversSection() {
+  const body = h("tbody");
+  const box = h(
+    "section",
+    { class: "block" },
+    h("h2", {}, "Other servers"),
+    h("p", { class: "muted" }, "Connect another NodOS machine and switch between them from the Server menu. On the other machine run: nodos token add hub. Then here: nodos server add NAME http://ADDRESS:8080, and paste the token. Restart NodOS after each."),
+    h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, "Name"), h("th", {}, "Address"))), body),
+  );
+  getLocal("/servers")
+    .then((d) => {
+      body.replaceChildren(...d.servers.map((s) => h("tr", {}, h("td", {}, s.name), h("td", { class: "mount-dev" }, s.host))));
+      if (d.servers.length === 0) body.replaceChildren(h("tr", {}, h("td", { class: "mount-dev" }, "None yet"), h("td", {})));
+    })
+    .catch(() => {});
+  return box;
+}
+
 export function settingsView({ role }) {
   const message = h("p", { class: "muted", role: "status" });
   const box = h("div", { hidden: true });
@@ -659,6 +677,7 @@ export function settingsView({ role }) {
           ["Update check", yesNo(s.update_check)],
           ["Custom mirror", s.update_mirror_set ? "configured" : "not set (GitHub)"],
         ]),
+        ...(isRemote() ? [] : [serversSection()]),
         section("Alert thresholds", [
           ["CPU busy", `${a.cpu_warn}% for ${a.cpu_samples} samples`],
           ["Memory used", `warn ${a.mem_warn}%, critical ${a.mem_crit}%`],
@@ -704,7 +723,7 @@ export function appsView({ role }) {
   const dialog = h("dialog", { class: "dialog" });
 
   function openUrl(a) {
-    return `${location.protocol}//${location.hostname}:${a.port}${a.web_path || ""}`;
+    return `${location.protocol}//${currentHost()}:${a.port}${a.web_path || ""}`;
   }
 
   function renderChips() {

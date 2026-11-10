@@ -47,8 +47,14 @@
       </div>
     </header>
     <section class="host" aria-label="Host">
-      <h1 id="host-name" class="host-name">-</h1>
-      <p id="host-meta" class="muted"></p>
+      <div>
+        <h1 id="host-name" class="host-name">-</h1>
+        <p id="host-meta" class="muted"></p>
+      </div>
+      <label id="server-pick-box" class="server-pick" hidden>
+        <span class="muted">Server</span>
+        <select id="server-pick" aria-label="Server"></select>
+      </label>
     </section>
     <div id="update" class="update" role="status" hidden>
       <span id="update-text"></span>
@@ -58,6 +64,7 @@
     </div>
     <ul id="alerts" class="alerts" aria-label="Active alerts" hidden></ul>
     <div id="notice" class="notice" role="status" hidden></div>
+    <h2 id="page-title" class="page-title"></h2>
     <main id="view" class="view"></main>
   </div>
 

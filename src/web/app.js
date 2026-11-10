@@ -1,4 +1,4 @@
-import { get, post, setCsrf } from "./api.js";
+import { get, getLocal, post, postLocal, setCsrf, setServer } from "./api.js";
 import { CAPACITY } from "./chart.js";
 import { duration } from "./format.js";
 import { views } from "./views.js";
@@ -12,12 +12,19 @@ let lastTs = 0;
 let current = null;
 let source = null;
 let retryTimer = null;
+let pollTimer = null;
+let pollRound = 0;
+let serverList = [];
+let selected = null;
 
 function showLogin() {
   stopStream();
   if (current && current.view.deactivate) current.view.deactivate();
   current = null;
   setCsrf("");
+  setServer(null);
+  selected = null;
+  $("server-pick-box").hidden = true;
   $("app").hidden = true;
   clearInterval(updateTimer);
   $("update").hidden = true;
@@ -35,10 +42,51 @@ function showApp(me) {
   $("nav-audit").hidden = role !== "admin";
   $("nav-settings").hidden = role !== "admin";
   setCsrf(me.csrf);
+  setServer(null);
+  selected = null;
+  route();
+  startStream();
+  startUpdateChecks();
+  loadServers();
+}
+
+async function loadServers() {
+  try {
+    const d = await getLocal("/servers");
+    serverList = d.servers;
+  } catch {
+    serverList = [];
+  }
+  const pick = $("server-pick");
+  $("server-pick-box").hidden = serverList.length === 0;
+  pick.replaceChildren(new Option("This server", ""), ...serverList.map((s) => new Option(s.name, s.name)));
+  pick.value = selected || "";
+}
+
+function resetLive() {
+  stopStream();
+  latest = null;
+  lastTs = 0;
+  for (const k of Object.keys(hist)) hist[k] = [];
+  renderAlerts([]);
+  $("update").hidden = true;
+  $("host-name").textContent = "-";
+  $("host-meta").textContent = "";
+  if (current && current.view.deactivate) current.view.deactivate();
+  current = null;
+}
+
+function selectServer(name) {
+  const entry = serverList.find((s) => s.name === name);
+  selected = entry ? entry.name : null;
+  resetLive();
+  setServer(selected, entry ? entry.host : "");
   route();
   startStream();
   startUpdateChecks();
 }
+
+$("server-pick").addEventListener("change", (e) => selectServer(e.target.value));
 
 function setConn(state, text) {
   const el = $("conn");
@@ -125,8 +173,11 @@ function routeName() {
   return Object.hasOwn(views, name) ? name : "overview";
 }
 
+const titles = { overview: "Overview", storage: "Storage", network: "Network", docker: "Docker", apps: "Apps", services: "Services", audit: "Audit log", settings: "Settings" };
+
 function route() {
   const name = routeName();
+  $("page-title").textContent = titles[name] || "";
   for (const a of $("nav").querySelectorAll("a")) {
     if (a.dataset.route === name) a.setAttribute("aria-current", "page");
     else a.removeAttribute("aria-current");
@@ -187,11 +238,41 @@ function stopStream() {
   if (source) source.close();
   source = null;
   clearTimeout(retryTimer);
+  clearTimeout(pollTimer);
+}
+
+// another server cannot be streamed through the hub, so it is polled instead
+async function pollRemote() {
+  const name = selected;
+  try {
+    const snap = await get("/system");
+    if (selected !== name) return;
+    setConn("live", "Live");
+    notice("");
+    onSnapshot(snap);
+    if (pollRound % 3 === 0) {
+      const a = await get("/alerts");
+      if (selected === name) renderAlerts(a.alerts);
+    }
+    pollRound += 1;
+  } catch (err) {
+    if (selected !== name) return;
+    if (err.status === 401) return showLogin();
+    setConn("down", "Unreachable");
+    notice(err.status === 502 || err.status === 504 ? `${name} cannot be reached from this server. Check that it is running and that its address and token are right.` : err.status === 503 ? "That server is not reporting metrics yet." : err.message);
+  }
+  if (selected === name) pollTimer = setTimeout(pollRemote, 2000);
 }
 
 async function startStream() {
   stopStream();
   setConn("connecting", "Connecting");
+  if (selected) {
+    pollRound = 0;
+    await seedHistory();
+    pollRemote();
+    return;
+  }
   try {
     await seedHistory();
     const snap = await get("/system");
@@ -228,7 +309,7 @@ async function startStream() {
     if (source && source.readyState === EventSource.CLOSED) {
       source.close();
       try {
-        await get("/me");
+        await getLocal("/me");
         retryTimer = setTimeout(startStream, 5000);
       } catch (err) {
         if (err.status === 401) showLogin();
@@ -247,7 +328,7 @@ $("login-form").addEventListener("submit", async (e) => {
   try {
     const body = { username: $("username").value.trim(), password: $("password").value };
     if (!$("code-row").hidden) body.code = $("code").value.trim();
-    const me = await post("/login", body);
+    const me = await postLocal("/login", body);
     $("code-row").hidden = true;
     $("code").value = "";
     showApp(me);
@@ -268,7 +349,7 @@ $("login-form").addEventListener("submit", async (e) => {
 
 $("logout").addEventListener("click", async () => {
   try {
-    await post("/logout");
+    await postLocal("/logout");
   } catch {
   }
   latest = null;
@@ -280,7 +361,7 @@ $("logout").addEventListener("click", async () => {
 
 (async () => {
   try {
-    showApp(await get("/me"));
+    showApp(await getLocal("/me"));
   } catch {
     showLogin();
   }

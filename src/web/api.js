@@ -1,14 +1,28 @@
 let csrf = "";
+let server = null;
+let serverHost = "";
+
+/** Chooses which machine the dashboard talks to. null is this one. */
+export function setServer(name, host) {
+  server = name || null;
+  serverHost = host || "";
+}
+
+export const isRemote = () => server !== null;
+
+/** Hostname for links that should open on the selected machine. */
+export const currentHost = () => (server ? serverHost : location.hostname);
 
 export function setCsrf(token) {
   csrf = token || "";
 }
 
-export async function request(method, path, body) {
+export async function request(method, path, body, local = false) {
   const headers = {};
   if (body !== undefined) headers["content-type"] = "application/json";
   if (method !== "GET") headers["x-csrf-token"] = csrf;
-  const res = await fetch("/api/v1" + path, {
+  const prefix = server && !local ? "/api/v1/remote/" + encodeURIComponent(server) : "/api/v1";
+  const res = await fetch(prefix + path, {
     method,
     headers,
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -30,3 +44,5 @@ export async function request(method, path, body) {
 
 export const get = (path) => request("GET", path);
 export const post = (path, body) => request("POST", path, body);
+export const getLocal = (path) => request("GET", path, undefined, true);
+export const postLocal = (path, body) => request("POST", path, body, true);
