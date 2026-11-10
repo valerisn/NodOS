@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily NodOS update check (opt-in, off unless you enabled it)
+Documentation=https://github.com/valerisn/NodOS
+
+[Timer]
+OnCalendar=daily
+# Spread machines out so a release never hits everyone at the same minute.
+RandomizedDelaySec=6h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

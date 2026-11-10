@@ -47,6 +47,14 @@ jobs:
         run: zig build
       - name: Run smoke test
         run: bash scripts/smoke.sh
+      - name: Build what the update test needs
+        run: |
+          zig build sign-tool --prefix /tmp/signtool
+          zig build -Dbuild-version=9.9.9 --prefix /tmp/nodos-new
+          zig build -Dbuild-version=9.9.10 --prefix /tmp/nodos-patch
+      - name: Update end to end (signatures, attacks, rollback, unattended rules)
+        # root, because replacing an installed binary needs it
+        run: sudo env "PATH=$PATH" PATCH_DIR=/tmp/nodos-patch bash scripts/update_e2e.sh /tmp/nodos-new "$PWD/zig-out/bin/nodos" /tmp/signtool/bin/release-sign
 
   lint:
     name: Shell scripts
@@ -128,6 +136,14 @@ jobs:
             echo "| RSS with 16 live streams | ${STREAM_RSS} KB |"
             echo "| CPU with 16 live streams | ${STREAM_CPU} % of one core |"
           } | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Update units are valid
+        run: sudo systemd-analyze verify /etc/systemd/system/nodos-update.service /etc/systemd/system/nodos-update.timer
+      - name: Build the "newer" release and the signing tool
+        run: |
+          zig build sign-tool --prefix /tmp/signtool
+          zig build -Doptimize=ReleaseSafe -Dstrip=true -Dbuild-version=9.9.9 --prefix /tmp/nodos-good
+      - name: Update the installed service (rollback of a broken release, upgrade, notice, toggle)
+        run: sudo bash scripts/update_service_e2e.sh /tmp/nodos-good /tmp/signtool/bin/release-sign
       - name: Stops cleanly
         run: |
           sudo systemctl stop nodos

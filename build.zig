@@ -40,12 +40,20 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(exe);
 
     // Release signing helper. Separate from nodos, and only built on request.
+    // It shares verify.zig with the updater so "what the tool checks" and "what
+    // nodos checks" can never drift apart.
+    const verify_mod = b.createModule(.{
+        .root_source_file = b.path("src/update/verify.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
     const sign_exe = b.addExecutable(.{
         .name = "release-sign",
         .root_module = b.createModule(.{
             .root_source_file = b.path("tools/release_sign.zig"),
             .target = target,
             .optimize = optimize,
+            .imports = &.{.{ .name = "verify", .module = verify_mod }},
         }),
     });
     const sign_step = b.step("sign-tool", "Build the release signing helper");

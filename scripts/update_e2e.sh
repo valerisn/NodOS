@@ -17,9 +17,6 @@ set -euo pipefail
 NEW_DIR="$1"
 CURRENT="$2"
 SIGN="$3"
-# A random port, so a leftover server from an earlier run can't answer for us.
-PORT="${UPDATE_E2E_PORT:-$((20000 + RANDOM % 20000))}"
-
 WORK="$(mktemp -d)"
 SERVER_PID=""
 cleanup() {
@@ -28,28 +25,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Native path for programs that are not MSYS aware (a no-op on Linux).
-native() { cygpath -m "$1" 2>/dev/null || echo "$1"; }
-fail() { echo "FAIL: $*" >&2; exit 1; }
-say() { echo "--- $*"; }
+# Helpers shared with the systemd test (needs WORK and SIGN first).
+. "$(dirname "$0")/lib/mirror.sh"
 
 NEW_BIN="$NEW_DIR/bin/nodos"
 [ -e "$NEW_BIN" ] || NEW_BIN="$NEW_DIR/bin/nodos.exe"
 [ -e "$NEW_BIN" ] || fail "no binary in $NEW_DIR/bin"
 
-case "$(uname -m)" in
-    x86_64|amd64) ARCH=x86_64 ;;
-    aarch64|arm64) ARCH=aarch64 ;;
-    *) fail "unsupported machine $(uname -m)" ;;
-esac
-
-# --- keys: a test key, and a second one that is NOT trusted
-KEYS="$("$SIGN" keygen)"
-SECRET="$(printf '%s\n' "$KEYS" | sed -n 's/^secret=//p')"
-PUBLIC="$(printf '%s\n' "$KEYS" | sed -n 's/^public=//p')"
-OTHER="$("$SIGN" keygen)"
-OTHER_SECRET="$(printf '%s\n' "$OTHER" | sed -n 's/^secret=//p')"
-sign_file() { NODOS_SIGNING_KEY="$1" "$SIGN" sign "$(native "$2")"; }
+make_keys
 
 # --- the "installed" binary the updater will replace
 INST="$WORK/inst"; mkdir -p "$INST"
@@ -59,43 +42,9 @@ INSTALLED="$INST/nodos"
 installed_version() { "$INSTALLED" version | sed 's/^nodos //'; }
 BEFORE="$(installed_version)"
 
-# --- release builder: make_release TAG BINARY [TAMPER]
-MIRROR="$WORK/mirror"; mkdir -p "$MIRROR"
-make_release() {
-    local tag="$1" bin="$2" mode="${3:-good}" name="nodos-$1-$ARCH-linux"
-    local dir="$MIRROR/download/$tag"; rm -rf "$dir"; mkdir -p "$dir" "$WORK/pkg/$name"
-    # cat, not cp: under MSYS, cp quietly renames an .exe to "nodos.exe".
-    cat "$bin" > "$WORK/pkg/$name/nodos"
-    chmod +x "$WORK/pkg/$name/nodos"
-    tar -C "$WORK/pkg" -czf "$dir/$name.tar.gz" "$name"
-    (cd "$dir" && sha256sum "./$name.tar.gz" > SHA256SUMS)
-    case "$mode" in
-        good) sign_file "$SECRET" "$dir/SHA256SUMS" > "$dir/SHA256SUMS.sig" ;;
-        wrongkey) sign_file "$OTHER_SECRET" "$dir/SHA256SUMS" > "$dir/SHA256SUMS.sig" ;;
-        unsigned) : ;;
-        tampered)
-            sign_file "$SECRET" "$dir/SHA256SUMS" > "$dir/SHA256SUMS.sig"
-            # change the tarball after it was signed for
-            printf 'x' >> "$dir/$name.tar.gz" ;;
-        sumsedited)
-            sign_file "$SECRET" "$dir/SHA256SUMS" > "$dir/SHA256SUMS.sig"
-            # attacker swaps the tarball AND rewrites the checksum list to match
-            printf 'x' >> "$dir/$name.tar.gz"
-            (cd "$dir" && sha256sum "./$name.tar.gz" > SHA256SUMS) ;;
-    esac
-    cat > "$MIRROR/latest.json" <<EOF
-{"tag_name":"$tag","draft":false,"prerelease":${PRERELEASE:-false},"published_at":"${PUBLISHED:-2026-01-01T00:00:00Z}","html_url":"https://example.test/$tag"}
-EOF
-}
-
 make_release "v0.0.0" "$NEW_BIN"
-# --directory (not a cd in a subshell) so $! is the python process itself and
-# cleanup really stops it. A leftover server would answer the next run's
-# requests from a deleted directory.
-python3 -m http.server "$PORT" --bind 127.0.0.1 --directory "$(native "$MIRROR")" >/dev/null 2>&1 &
-SERVER_PID=$!
-for _ in $(seq 1 100); do curl -sf -o /dev/null "http://127.0.0.1:$PORT/latest.json" && break; sleep 0.1; done
-curl -sf -o /dev/null "http://127.0.0.1:$PORT/latest.json" || fail "the mirror server did not start on port $PORT"
+start_mirror
+SERVER_PID="$MIRROR_PID"
 
 CONF="$WORK/nodos.conf"
 # The server creates its data directory at first start; do the same here.

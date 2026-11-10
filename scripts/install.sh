@@ -40,6 +40,10 @@ else
 fi
 
 install -m 0644 "$HERE/packaging/nodos.service" /etc/systemd/system/nodos.service
+# The auto-update units are installed but NOT enabled. Turning them on is a
+# separate, deliberate step: sudo nodos update --auto on
+install -m 0644 "$HERE/packaging/nodos-update.service" /etc/systemd/system/nodos-update.service
+install -m 0644 "$HERE/packaging/nodos-update.timer" /etc/systemd/system/nodos-update.timer
 systemctl daemon-reload
 
 cat <<'EOF'
@@ -54,4 +58,7 @@ NodOS is installed but not running. Next:
 
   3. Put a TLS reverse proxy in front before using it beyond localhost.
      See docs/installation/README.md.
+
+Later, to update:  sudo nodos update          (checks, verifies, installs, rolls back on failure)
+To only look:      nodos update --check
 EOF
