@@ -55,9 +55,12 @@ These are real. None is hidden elsewhere.
    attacker with write access to `/var/lib/nodos` can edit it. Ship it
    elsewhere if you need integrity.
 4. **No second factor.** Passwords only.
-5. **Throttling is per address.** An attacker with many addresses can still
-   guess slowly. Behind a proxy it only works if `trusted_proxy` is configured
-   correctly; if it is wrong, every user may share one bucket.
+5. **Throttling is per address and per account.** An address (an IPv6 /64) gets
+   5 attempts per 15 minutes and an account gets 20, so many addresses can guess
+   slowly at best. The cost is that anyone can lock a known account for 15
+   minutes; `nodos user passwd` on the host still works. Behind a proxy it only
+   works if `trusted_proxy` is configured correctly; if it is wrong, every user
+   may share one bucket.
 6. **Roles are coarse.** Two roles, set at creation. No per-container or
    per-unit permissions beyond the config allowlist.
 7. **Docker access is root-equivalent** by nature of the socket, whatever NodOS

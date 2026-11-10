@@ -33,7 +33,9 @@ Body: `{"username": "...", "password": "..."}`, at most 1024 bytes.
 | 400 | Body is not valid JSON of that shape |
 | 401 | Invalid credentials. Unknown user and wrong password are indistinguishable |
 | 413 | Body too large |
-| 429 | Too many failures from this address (5 per 15 minutes) |
+| 415 | The request was not `Content-Type: application/json` |
+| 429 | Too many attempts from this address (5 per 15 minutes, counted per IPv6 /64) or against this account (20 per 15 minutes) |
+| 503 | Four sign-ins are already being checked; retry in a moment |
 
 ### `GET /api/v1/me`
 

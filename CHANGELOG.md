@@ -7,6 +7,18 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 First public release is not cut yet; everything here is on `main`.
 
+### Security
+
+Found in the pre-release review, all fixed before any release. Details in
+[security issues](security%20issues/README.md).
+- Login throttle counts attempts before checking the password, so parallel
+  bursts no longer bypass it; successes no longer reset failures.
+- Per-account limit, IPv6 /64 bucketing, bounded throttle table, at most four
+  password hashes at once.
+- Login requires `Content-Type: application/json`.
+- The root updater keeps its state in `/var/lib/nodos-update` instead of the
+  service's data directory, closing a symlink privilege escalation.
+
 ### Added
 
 **Server and security**
