@@ -683,4 +683,235 @@ export function settingsView({ role }) {
   };
 }
 
-export const views = { overview: overviewView, storage: storageView, network: networkView, docker: dockerView, services: serviceView, audit: auditView, settings: settingsView };
+export function appsView({ role }) {
+  const admin = role === "admin";
+  let apps = [];
+  let dockerState = "ok";
+  let jobs = [];
+  let category = "All";
+  let query = "";
+  let alive = true;
+  let catTimer = null;
+  let jobTimer = null;
+  const dismissed = new Set();
+
+  const search = h("input", { type: "search", placeholder: "Search apps", "aria-label": "Search apps", class: "search" });
+  const chips = h("div", { class: "chips", role: "group", "aria-label": "Category" });
+  const notice = h("p", { class: "notice-line", hidden: true });
+  const jobBox = h("div", { class: "jobs", hidden: true });
+  const grid = h("div", { class: "cards" });
+  const empty = h("p", { class: "empty", hidden: true }, "Nothing matches that search.");
+  const dialog = h("dialog", { class: "dialog" });
+
+  function openUrl(a) {
+    return `${location.protocol}//${location.hostname}:${a.port}${a.web_path || ""}`;
+  }
+
+  function renderChips() {
+    const cats = ["All", ...new Set(apps.map((a) => a.category))];
+    chips.replaceChildren(
+      ...cats.map((c) => {
+        const b = h("button", { type: "button", class: "chip", "aria-pressed": c === category ? "true" : "false" }, c);
+        b.addEventListener("click", () => {
+          category = c;
+          renderChips();
+          renderGrid();
+        });
+        return b;
+      }),
+    );
+  }
+
+  function visible() {
+    const q = query.trim().toLowerCase();
+    return apps.filter((a) => (category === "All" || a.category === category) && (!q || a.name.toLowerCase().includes(q) || a.blurb.toLowerCase().includes(q) || a.category.toLowerCase().includes(q)));
+  }
+
+  function card(a) {
+    const busy = jobs.some((j) => j.app === a.id && (j.state === "pulling" || j.state === "starting"));
+    const status = a.installed ? h("span", { class: "pill", "data-level": a.running === a.containers ? "ok" : "warn" }, a.running === a.containers ? "Running" : "Stopped") : null;
+    const actions = h("div", { class: "card-actions" });
+    if (a.installed) {
+      actions.append(h("a", { class: "btn", href: openUrl(a), target: "_blank", rel: "noopener noreferrer" }, "Open"));
+      if (admin) actions.append(button("Remove", () => remove(a), "quiet"));
+    } else if (admin) {
+      actions.append(button(busy ? "Installing..." : "Install", () => installDialog(a), "primary", busy || dockerState !== "ok"));
+    }
+    return h(
+      "article",
+      { class: "card" },
+      h("div", { class: "card-head" }, h("h3", {}, a.name), status),
+      h("p", { class: "muted" }, a.blurb),
+      h("div", { class: "card-meta" }, h("span", {}, a.category), a.containers > 1 ? h("span", {}, `${a.containers} containers`) : null),
+      actions,
+    );
+  }
+
+  function button(label, onClick, kind, disabled) {
+    const b = h("button", { type: "button", class: kind || "quiet", disabled: disabled ? true : false }, label);
+    b.addEventListener("click", onClick);
+    return b;
+  }
+
+  function renderGrid() {
+    const list = visible();
+    grid.replaceChildren(...list.map(card));
+    empty.hidden = list.length > 0 || apps.length === 0;
+  }
+
+  function renderNotice() {
+    const msg = {
+      off: "Docker is turned off in the NodOS config, so apps cannot be installed.",
+      down: "NodOS cannot reach Docker. Check that Docker is running and that NodOS may use its socket.",
+    }[dockerState];
+    notice.hidden = !msg;
+    notice.textContent = msg || "";
+  }
+
+  function renderJobs() {
+    const shown = jobs.filter((j) => !dismissed.has(j.serial));
+    jobBox.hidden = shown.length === 0;
+    jobBox.replaceChildren(
+      ...shown.map((j) => {
+        const app = apps.find((a) => a.id === j.app);
+        const name = app ? app.name : j.app;
+        const running = j.state === "pulling" || j.state === "starting";
+        const kids = [h("div", { class: "job-head" }, h("strong", {}, name), h("span", { class: "pill", "data-level": j.state === "failed" ? "crit" : j.state === "done" ? "ok" : "warn" }, running ? "Installing" : j.state === "done" ? "Installed" : "Failed"))];
+        kids.push(h("p", { class: "muted" }, j.message));
+        if (running && j.steps > 0) {
+          const bar = h("div", { class: "bar" }, h("i", {}));
+          bar.firstChild.style.width = Math.min(100, (j.step / j.steps) * 100) + "%";
+          kids.push(bar);
+        }
+        if (j.secret) {
+          const copy = button("Copy", async () => {
+            try {
+              await navigator.clipboard.writeText(j.secret);
+              copy.textContent = "Copied";
+            } catch {
+              copy.textContent = "Select and copy it";
+            }
+          });
+          kids.push(h("p", {}, `${j.secret_label}: `, h("code", {}, j.secret), " ", copy), h("p", { class: "muted" }, "Shown only until you dismiss this. Save it now."));
+        }
+        if (!running) kids.push(button("Dismiss", () => { dismissed.add(j.serial); renderJobs(); }));
+        return h("section", { class: "job" }, ...kids);
+      }),
+    );
+  }
+
+  async function loadApps() {
+    try {
+      const d = await get("/apps");
+      if (!alive) return;
+      apps = d.apps;
+      dockerState = d.docker;
+      renderChips();
+      renderNotice();
+      renderGrid();
+    } catch (err) {
+      if (!alive) return;
+      notice.hidden = false;
+      notice.textContent = err.status === 401 ? "Your session ended. Sign in again." : err.message;
+    }
+  }
+
+  async function loadJobs() {
+    if (!admin) return;
+    try {
+      const d = await get("/apps/jobs");
+      if (!alive) return;
+      const wasRunning = jobs.some((j) => j.state === "pulling" || j.state === "starting");
+      jobs = d.jobs;
+      renderJobs();
+      renderGrid();
+      const nowRunning = jobs.some((j) => j.state === "pulling" || j.state === "starting");
+      if (wasRunning && !nowRunning) loadApps();
+      clearTimeout(jobTimer);
+      jobTimer = setTimeout(loadJobs, nowRunning ? 1500 : 8000);
+    } catch {
+      jobTimer = setTimeout(loadJobs, 8000);
+    }
+  }
+
+  function installDialog(a) {
+    const err = h("p", { class: "form-error", role: "alert", hidden: true });
+    const inputs = {};
+    const fields = a.params.map((p) => {
+      const input = h("input", { type: "text", placeholder: "/srv/" + p.key, autocomplete: "off", spellcheck: "false", required: p.required });
+      inputs[p.key] = input;
+      return h("label", { class: "field" }, p.label, input, p.help ? h("small", { class: "muted" }, p.help) : null);
+    });
+    const port = h("input", { type: "number", min: "1024", max: "65535", value: String(a.port) });
+    const lan = h("input", { type: "checkbox" });
+    const go = h("button", { type: "submit", class: "primary" }, "Install");
+    const cancel = button("Cancel", () => dialog.close());
+    const form = h(
+      "form",
+      { method: "dialog", class: "dialog-form" },
+      h("h2", {}, `Install ${a.name}`),
+      h("p", { class: "muted" }, a.blurb),
+      a.notes ? h("p", { class: "note" }, a.notes) : null,
+      ...fields,
+      h("label", { class: "field" }, "Web port", port, h("small", { class: "muted" }, "The port you open in the browser")),
+      h("label", { class: "check" }, lan, " Only reachable from this server"),
+      err,
+      h("div", { class: "dialog-actions" }, cancel, go),
+    );
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      err.hidden = true;
+      go.disabled = true;
+      const paths = {};
+      for (const [k, el] of Object.entries(inputs)) if (el.value.trim()) paths[k] = el.value.trim();
+      try {
+        await post("/apps/install", { id: a.id, port: Number(port.value) || undefined, paths, lan_only: lan.checked });
+        dialog.close();
+        dismissed.clear();
+        await loadJobs();
+      } catch (ex) {
+        err.textContent = ex.message;
+        err.hidden = false;
+      } finally {
+        go.disabled = false;
+      }
+    });
+    dialog.replaceChildren(form);
+    dialog.showModal();
+  }
+
+  async function remove(a) {
+    if (!confirm(`Remove ${a.name}? Its containers are deleted. Your data volumes are kept, so installing it again finds everything.`)) return;
+    try {
+      await post(`/apps/${encodeURIComponent(a.id)}/remove`);
+    } catch (ex) {
+      notice.hidden = false;
+      notice.textContent = `Could not remove ${a.name}: ${ex.message}`;
+    }
+    loadApps();
+  }
+
+  search.addEventListener("input", () => {
+    query = search.value;
+    renderGrid();
+  });
+
+  const intro = h("p", { class: "muted lead" }, admin ? "Pick an app and NodOS sets it up with Docker. Each one gets its own private network and named data volumes." : "Apps installed on this server. Only administrators can install or remove them.");
+  return {
+    el: h("div", {}, intro, notice, jobBox, h("div", { class: "toolbar" }, search, chips), grid, empty, dialog),
+    activate() {
+      alive = true;
+      loadApps();
+      loadJobs();
+      catTimer = setInterval(loadApps, 15000);
+    },
+    deactivate() {
+      alive = false;
+      clearInterval(catTimer);
+      clearTimeout(jobTimer);
+    },
+    update() {},
+  };
+}
+
+export const views = { overview: overviewView, storage: storageView, network: networkView, docker: dockerView, services: serviceView, apps: appsView, audit: auditView, settings: settingsView };

@@ -47,6 +47,8 @@ jobs:
         run: zig build
       - name: Run smoke test
         run: bash scripts/smoke.sh
+      - name: Install a real app through the API (real Docker)
+        run: bash scripts/apps_e2e.sh zig-out/bin/nodos
       - name: Build what the update test needs
         run: |
           zig build sign-tool --prefix /tmp/signtool
