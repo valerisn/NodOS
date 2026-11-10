@@ -89,7 +89,7 @@ jobs:
           systemctl is-active nodos
       - name: Hardened service can still read the host and sign in
         run: |
-          LOGIN=$(curl -s -i -d '{"username":"ci","password":"ci install passphrase"}' http://127.0.0.1:8080/api/v1/login)
+          LOGIN=$(curl -s -i -H 'content-type: application/json' -d '{"username":"ci","password":"ci install passphrase"}' http://127.0.0.1:8080/api/v1/login)
           echo "$LOGIN" | head -1 | grep -q 200
           TOKEN=$(echo "$LOGIN" | grep -i '^set-cookie:' | sed -E 's/.*nodos_session=([^;]+).*/\1/')
           sleep 5
@@ -101,7 +101,7 @@ jobs:
           rss() { awk '/VmRSS/{print $2}' "/proc/$PID/status"; }
           ticks() { awk '{print $14+$15}' "/proc/$PID/stat"; }
           pctl() { sort -n | awk '{a[NR]=$1} END{printf "p50=%.2f ms  p99=%.2f ms  max=%.2f ms (n=%d)", a[int(NR*0.5)]*1000, a[int(NR*0.99)]*1000, a[NR]*1000, NR}'; }
-          LOGIN=$(curl -s -i -d '{"username":"ci","password":"ci install passphrase"}' http://127.0.0.1:8080/api/v1/login)
+          LOGIN=$(curl -s -i -H 'content-type: application/json' -d '{"username":"ci","password":"ci install passphrase"}' http://127.0.0.1:8080/api/v1/login)
           TOKEN=$(echo "$LOGIN" | grep -i '^set-cookie:' | sed -E 's/.*nodos_session=([^;]+).*/\1/')
           sleep 10
           IDLE_RSS=$(rss)

@@ -55,9 +55,10 @@ URL="http://127.0.0.1:$PORT/api/v1"
 [ "$(status -X POST -H 'Content-Length:' "$URL/login")" = "411" ] || fail "bodiless POST should be 411"
 kill -0 "$SERVER_PID" || fail "server died after bodiless POST"
 
-[ "$(status -d '{"username":"smoke","password":"wrong wrong wrong"}' "$URL/login")" = "401" ] || fail "bad login"
+[ "$(status -H 'content-type: application/json' -d '{"username":"smoke","password":"wrong wrong wrong"}' "$URL/login")" = "401" ] || fail "bad login"
+[ "$(status -d '{"username":"smoke","password":"x"}' "$URL/login")" = "415" ] || fail "login must insist on application/json"
 
-LOGIN="$(curl -s -i -d '{"username":"smoke","password":"smoke test passphrase"}' "$URL/login")"
+LOGIN="$(curl -s -i -H 'content-type: application/json' -d '{"username":"smoke","password":"smoke test passphrase"}' "$URL/login")"
 echo "$LOGIN" | head -1 | grep -q '200' || fail "good login"
 TOKEN="$(echo "$LOGIN" | grep -i '^set-cookie:' | sed -E 's/.*nodos_session=([^;]+).*/\1/')"
 CSRF="$(echo "$LOGIN" | grep -o '"csrf":"[^"]*"' | cut -d'"' -f4)"

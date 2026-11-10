@@ -33,6 +33,8 @@ pub const App = struct {
     users: users_mod.Users,
     sessions: auth.SessionStore = .{},
     limiter: ratelimit.Limiter = .{},
+    user_limiter: ratelimit.Limiter = .{},
+    hashing: std.atomic.Value(u32) = .init(0),
     sampler: sampler_mod.Sampler = .{},
     streams: std.atomic.Value(u32) = .init(0),
     alerts: alerts_mod.Engine = .{},
@@ -61,6 +63,7 @@ pub const App = struct {
     pub fn deinit(app: *App, io: Io) void {
         app.sessions.deinit(app.gpa);
         app.limiter.deinit(app.gpa);
+        app.user_limiter.deinit(app.gpa);
         if (app.audit_log) |*a| a.close(io);
     }
 
@@ -107,6 +110,7 @@ pub const Ctx = struct {
     client: ratelimit.Key,
     ip_text: []const u8,
     now_s: i64,
+    json_body: bool = true,
 };
 
 pub const Scratch = struct {
@@ -122,6 +126,10 @@ const err_forbidden: Reply = .{ .status = .forbidden, .body = "{\"error\":\"forb
 const err_bad: Reply = .{ .status = .bad_request, .body = "{\"error\":\"bad request\"}" };
 const err_internal: Reply = .{ .status = .internal_server_error, .body = "{\"error\":\"internal\"}" };
 const err_unavailable: Reply = .{ .status = .service_unavailable, .body = "{\"error\":\"monitoring data not available\"}" };
+
+const login_ip_limit: u16 = 5;
+const login_user_limit: u16 = 20;
+const max_concurrent_hashes: u32 = 4;
 
 pub fn dispatch(app: *App, io: Io, ctx: Ctx, body: []const u8, s: *Scratch) Reply {
     const get = ctx.method == .GET or ctx.method == .HEAD;
@@ -363,28 +371,45 @@ fn serviceRoute(app: *App, io: Io, ctx: Ctx, s: *Scratch) Reply {
 }
 
 fn login(app: *App, io: Io, ctx: Ctx, body: []const u8, s: *Scratch) Reply {
-    if (!app.limiter.allow(io, ctx.client, ctx.now_s)) {
-        app.record(io, ctx.now_s, "-", "auth.login.throttled", false, ctx.ip_text);
-        return .{ .status = .too_many_requests, .body = "{\"error\":\"too many attempts, try again later\"}" };
+    if (!ctx.json_body) {
+        return .{ .status = .unsupported_media_type, .body = "{\"error\":\"send application/json\"}" };
     }
+
+    if (!app.limiter.admit(app.gpa, io, ctx.client, login_ip_limit, ctx.now_s)) return throttled(app, io, ctx);
 
     var fba_buf: [2048]u8 = undefined;
     var fba: std.heap.FixedBufferAllocator = .init(&fba_buf);
     const Creds = struct { username: []const u8, password: []const u8 };
-    const creds = std.json.parseFromSliceLeaky(Creds, fba.allocator(), body, .{ .ignore_unknown_fields = true }) catch return err_bad;
+    const creds = std.json.parseFromSliceLeaky(Creds, fba.allocator(), body, .{ .ignore_unknown_fields = true }) catch {
+        app.limiter.refund(io, ctx.client);
+        return err_bad;
+    };
 
+    const ukey = ratelimit.userKey(creds.username);
+    if (!app.user_limiter.admit(app.gpa, io, ukey, login_user_limit, ctx.now_s)) {
+        app.limiter.refund(io, ctx.client);
+        return throttled(app, io, ctx);
+    }
+
+    if (app.hashing.fetchAdd(1, .acq_rel) >= max_concurrent_hashes) {
+        _ = app.hashing.fetchSub(1, .acq_rel);
+        app.limiter.refund(io, ctx.client);
+        app.user_limiter.refund(io, ukey);
+        return .{ .status = .service_unavailable, .body = "{\"error\":\"too many sign-ins at once, try again in a moment\"}" };
+    }
     const user = app.users.find(creds.username);
     const phc: []const u8 = if (user) |u| u.phc else app.dummy_phc[0..app.dummy_len];
     const matched = auth.verifyPassword(app.gpa, io, phc, creds.password);
+    _ = app.hashing.fetchSub(1, .acq_rel);
 
     if (!matched or user == null) {
-        app.limiter.recordFailure(app.gpa, io, ctx.client, ctx.now_s);
         const who = if (users_mod.validName(creds.username)) creds.username else "-";
         app.record(io, ctx.now_s, who, "auth.login", false, ctx.ip_text);
         return .{ .status = .unauthorized, .body = "{\"error\":\"invalid credentials\"}" };
     }
 
-    app.limiter.reset(io, ctx.client);
+    app.limiter.refund(io, ctx.client);
+    app.user_limiter.refund(io, ukey);
     const issued = app.sessions.create(app.gpa, io, user.?.id, user.?.role, ctx.now_s) catch |err| {
         log.err("session create failed: {s}", .{@errorName(err)});
         return err_internal;
@@ -392,6 +417,11 @@ fn login(app: *App, io: Io, ctx: Ctx, body: []const u8, s: *Scratch) Reply {
     app.record(io, ctx.now_s, user.?.name, "auth.login", true, ctx.ip_text);
     const b = std.fmt.bufPrint(&s.body, "{{\"username\":\"{s}\",\"role\":\"{s}\",\"csrf\":\"{s}\"}}", .{ user.?.name, @tagName(user.?.role), &issued.csrf }) catch return err_internal;
     return .{ .status = .ok, .body = b, .set_cookie = cookie(app, s, &issued.token, auth.SessionStore.absolute_ttl_s) };
+}
+
+fn throttled(app: *App, io: Io, ctx: Ctx) Reply {
+    app.record(io, ctx.now_s, "-", "auth.login.throttled", false, ctx.ip_text);
+    return .{ .status = .too_many_requests, .body = "{\"error\":\"too many attempts, try again later\"}" };
 }
 
 fn sessionInfo(app: *App, sess: auth.Session, ctx: Ctx, s: *Scratch) Reply {
@@ -493,11 +523,20 @@ test "sameHost ignores ports and families" {
     try std.testing.expect(!sameHost(a, c));
 }
 
+/// `application/json`, optionally followed by parameters. Asking for it forces
+/// a browser to make a CORS preflight on any cross-site request, which closes
+/// off form-based login CSRF.
+fn isJson(content_type: ?[]const u8) bool {
+    const ct = content_type orelse return false;
+    const base = if (std.mem.findScalar(u8, ct, ';')) |i| ct[0..i] else ct;
+    return std.ascii.eqlIgnoreCase(std.mem.trim(u8, base, " \t"), "application/json");
+}
+
 fn clientKey(addr: Io.net.IpAddress) ratelimit.Key {
     var k: ratelimit.Key = @splat(0);
     switch (addr) {
         .ip4 => |a| @memcpy(k[0..4], &a.bytes),
-        .ip6 => |a| k = a.bytes,
+        .ip6 => |a| k = ratelimit.bucketIp6(a.bytes),
     }
     return k;
 }
@@ -656,6 +695,7 @@ fn serveConnection(io: Io, app: *App, pool: *Pool, slot: *Slot, stream: Io.net.S
             .client = client,
             .ip_text = ip_text,
             .now_s = Io.Timestamp.now(io, .real).toSeconds(),
+            .json_body = isJson(head.content_type),
         };
         var fwd_buf: [64]u8 = undefined;
         var it = req.iterateHeaders();
@@ -1124,6 +1164,16 @@ test "query integer parsing" {
     try std.testing.expectEqual(@as(?usize, null), queryInt("", "tail"));
 }
 
+const bad_login = "{\"username\":\"alice\",\"password\":\"wrong wrong wrong\"}";
+const good_login = "{\"username\":\"alice\",\"password\":\"correct horse battery\"}";
+
+fn ctxFrom(n: u32) Ctx {
+    var c = testCtx(.POST, "/api/v1/login");
+    c.client = @splat(0);
+    std.mem.writeInt(u32, c.client[0..4], n, .little);
+    return c;
+}
+
 test "lockout after repeated failures" {
     const io = std.testing.io;
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
@@ -1132,9 +1182,93 @@ test "lockout after repeated failures" {
     defer app.deinit(io);
     var s: Scratch = .{};
     var i: usize = 0;
-    while (i < ratelimit.Limiter.max_failures) : (i += 1) {
-        _ = dispatch(&app, io, testCtx(.POST, "/api/v1/login"), "{\"username\":\"alice\",\"password\":\"wrong wrong wrong\"}", &s);
+    while (i < login_ip_limit) : (i += 1) {
+        try std.testing.expectEqual(http.Status.unauthorized, dispatch(&app, io, testCtx(.POST, "/api/v1/login"), bad_login, &s).status);
     }
-    const r = dispatch(&app, io, testCtx(.POST, "/api/v1/login"), "{\"username\":\"alice\",\"password\":\"correct horse battery\"}", &s);
+    const r = dispatch(&app, io, testCtx(.POST, "/api/v1/login"), good_login, &s);
     try std.testing.expectEqual(http.Status.too_many_requests, r.status);
+}
+
+test "a success from the same address does not reset the failure count" {
+    const io = std.testing.io;
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var app = try testApp(arena.allocator());
+    defer app.deinit(io);
+    _ = try app.users.add(arena.allocator(), "mallory", .viewer, app.users.find("alice").?.phc);
+    var s: Scratch = .{};
+    const mallory_ok = "{\"username\":\"mallory\",\"password\":\"correct horse battery\"}";
+
+    var guesses: usize = 0;
+    var round: usize = 0;
+    while (round < 30) : (round += 1) {
+        // one real login to an account of their own, then a guess at alice
+        _ = dispatch(&app, io, testCtx(.POST, "/api/v1/login"), mallory_ok, &s);
+        const r = dispatch(&app, io, testCtx(.POST, "/api/v1/login"), bad_login, &s);
+        if (r.status == .unauthorized) guesses += 1;
+    }
+    try std.testing.expect(guesses <= login_ip_limit);
+}
+
+test "an account is limited across addresses, so spreading out does not help" {
+    const io = std.testing.io;
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var app = try testApp(arena.allocator());
+    defer app.deinit(io);
+    var s: Scratch = .{};
+    var real_guesses: usize = 0;
+    var n: u32 = 0;
+    while (n < 100) : (n += 1) {
+        const r = dispatch(&app, io, ctxFrom(n), bad_login, &s);
+        if (r.status == .unauthorized) real_guesses += 1;
+    }
+    try std.testing.expectEqual(@as(usize, login_user_limit), real_guesses);
+    // even the right password from a fresh address is refused while the account is locked
+    try std.testing.expectEqual(http.Status.too_many_requests, dispatch(&app, io, ctxFrom(5000), good_login, &s).status);
+}
+
+test "too many hashes at once are turned away and their attempts handed back" {
+    const io = std.testing.io;
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var app = try testApp(arena.allocator());
+    defer app.deinit(io);
+    var s: Scratch = .{};
+    app.hashing.store(max_concurrent_hashes, .monotonic);
+    for (0..10) |i| {
+        const r = dispatch(&app, io, ctxFrom(@intCast(i)), good_login, &s);
+        try std.testing.expectEqual(http.Status.service_unavailable, r.status);
+    }
+    try std.testing.expectEqual(max_concurrent_hashes, app.hashing.load(.monotonic));
+    // being turned away did not use up anyone's budget
+    app.hashing.store(0, .monotonic);
+    try std.testing.expectEqual(http.Status.ok, dispatch(&app, io, ctxFrom(0), good_login, &s).status);
+    try std.testing.expectEqual(@as(u32, 0), app.hashing.load(.monotonic));
+}
+
+test "login insists on application/json" {
+    const io = std.testing.io;
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var app = try testApp(arena.allocator());
+    defer app.deinit(io);
+    var s: Scratch = .{};
+    var c = testCtx(.POST, "/api/v1/login");
+    c.json_body = false;
+    try std.testing.expectEqual(http.Status.unsupported_media_type, dispatch(&app, io, c, good_login, &s).status);
+    try std.testing.expect(isJson("application/json"));
+    try std.testing.expect(isJson("Application/JSON; charset=utf-8"));
+    try std.testing.expect(!isJson("text/plain"));
+    try std.testing.expect(!isJson("application/x-www-form-urlencoded"));
+    try std.testing.expect(!isJson("application/jsonx"));
+    try std.testing.expect(!isJson(null));
+}
+
+test "ipv6 attackers share a throttle bucket per /64" {
+    const a = try Io.net.IpAddress.parse("2001:db8:1:2:aaaa:bbbb:cccc:1", 0);
+    const b = try Io.net.IpAddress.parse("2001:db8:1:2:1111:2222:3333:4444", 0);
+    const c = try Io.net.IpAddress.parse("2001:db8:1:3::1", 0);
+    try std.testing.expectEqualSlices(u8, &clientKey(a), &clientKey(b));
+    try std.testing.expect(!std.mem.eql(u8, &clientKey(a), &clientKey(c)));
 }

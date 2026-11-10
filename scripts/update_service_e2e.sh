@@ -72,7 +72,7 @@ printf '\nupdate_mirror = http://127.0.0.1:%s\n' "$PORT" >> "$CONF"
 printf '%s\n' 'notice test passphrase' | sudo -u nodos "$BIN" user add notice --config "$CONF" > /dev/null
 systemctl restart nodos
 for _ in $(seq 1 50); do [ -n "$(health_version)" ] && break; sleep 0.2; done
-LOGIN="$(curl -s -i -d '{"username":"notice","password":"notice test passphrase"}' "http://127.0.0.1:8080/api/v1/login")"
+LOGIN="$(curl -s -i -H 'content-type: application/json' -d '{"username":"notice","password":"notice test passphrase"}' "http://127.0.0.1:8080/api/v1/login")"
 TOKEN="$(printf '%s' "$LOGIN" | grep -i '^set-cookie:' | sed -E 's/.*nodos_session=([^;]+).*/\1/')"
 [ -n "$TOKEN" ] || fail "could not sign in to read the update notice"
 FOUND=""
