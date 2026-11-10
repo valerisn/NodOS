@@ -61,7 +61,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: shellcheck
-        run: shellcheck -x scripts/*.sh scripts/lib/*.sh
+        run: shellcheck -x -P SCRIPTDIR scripts/*.sh scripts/lib/*.sh
 
   install:
     name: Install as a service (linux)

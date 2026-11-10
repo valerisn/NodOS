@@ -5,6 +5,7 @@ set -euo pipefail
 [ "$(uname -s)" = "Linux" ] || { echo "Linux only" >&2; exit 1; }
 
 GOOD_DIR="$1"
+# shellcheck disable=SC2034
 SIGN="$2"
 WORK="$(mktemp -d)"
 MIRROR_PID=""

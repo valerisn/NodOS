@@ -3,6 +3,7 @@ set -euo pipefail
 
 NEW_DIR="$1"
 CURRENT="$2"
+# shellcheck disable=SC2034
 SIGN="$3"
 WORK="$(mktemp -d)"
 SERVER_PID=""
