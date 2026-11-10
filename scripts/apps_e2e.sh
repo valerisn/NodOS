@@ -80,7 +80,7 @@ done
 echo "$STATE" | grep -q 'failed' || fail "installing twice should fail, got: $STATE"
 [ "$(docker inspect -f '{{.State.Running}}' nodos-navidrome-app)" = "true" ] || fail "the failed second install damaged the first"
 
-CODE="$(curl -s -o /dev/null -w '%{http_code}' "${AUTH[@]}" "${POST[@]}" -X POST "$URL/apps/navidrome/remove")"
+CODE="$(curl -s -o /dev/null -w '%{http_code}' "${AUTH[@]}" "${POST[@]}" -d "" "$URL/apps/navidrome/remove")"
 [ "$CODE" = "200" ] || fail "remove returned $CODE"
 docker inspect nodos-navidrome-app >/dev/null 2>&1 && fail "container survived removal"
 docker volume inspect nodos-navidrome-data >/dev/null 2>&1 || fail "removal must keep the data volume"
