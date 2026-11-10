@@ -59,6 +59,21 @@ By default NodOS listens on `127.0.0.1:8080` only. Open it with an SSH tunnel
 
 ## 5. Put TLS in front
 
+The quickest way on a Linux host with systemd: install Caddy from
+[caddyserver.com/docs/install](https://caddyserver.com/docs/install), then
+
+```sh
+sudo scripts/setup-tls.sh nodos.home.lan
+```
+
+It writes a Caddy site block for that name, sets `trusted_proxy = 127.0.0.1`
+and `secure_cookies = true` in `/etc/nodos/nodos.conf`, and reloads both
+services. Use `--dry-run` to see what it would do. The script never installs
+Caddy itself, so you choose where its packages come from. For a private name
+such as `.lan`, Caddy issues the certificate from its own authority; run
+`caddy trust` once on each device that opens the dashboard, or use a public
+name and let Caddy get a normal certificate. The manual versions follow.
+
 NodOS speaks plain HTTP. Anything that crosses a network should go through a
 reverse proxy that terminates TLS. Two examples, both on the same machine.
 

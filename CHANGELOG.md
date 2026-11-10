@@ -21,6 +21,8 @@ Found in the pre-release review, all fixed before any release. Details in
 
 ### Added
 
+- `scripts/setup-tls.sh`: one command to put Caddy in front of NodOS, with a test in CI.
+
 - Optional two-factor login (TOTP, RFC 6238): `nodos user totp NAME`, `nodos user totp-off NAME`. Codes work once.
 
 - `nodos backup` and `nodos restore` for users and the audit log (plain tar, mode 0600).
