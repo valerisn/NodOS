@@ -55,7 +55,7 @@ implemented and tested.
 - [x] Performance measured on Linux against the budget (CI step, numbers in docs/development/performance.md); long soak still to do
 - [x] Install docs, hardened systemd unit and installer; CI installs and starts the service on Ubuntu (not yet tried on a real home server)
 - [x] Update notice, `nodos update` with signature verification, atomic swap, health check and automatic rollback, opt-in auto-update (tested end to end on Linux under systemd)
-- [ ] Generate the release signing key (`scripts/release-keygen.sh`, needs the maintainer) and cut the first signed release
+- [x] Release signing key generated and the public half committed (`src/update/signing.pub`); the first signed release is waiting for the maintainer to tag it
 
 ## Later
 
