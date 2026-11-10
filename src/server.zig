@@ -13,6 +13,8 @@ const ratelimit = @import("ratelimit.zig");
 const audit = @import("audit.zig");
 const assets = @import("assets.zig");
 const alerts_mod = @import("alerts.zig");
+const update_checker = @import("update/checker.zig");
+const update_release = @import("update/release.zig");
 const docker = @import("integrations/docker.zig");
 const systemd = @import("integrations/systemd.zig");
 const sampler_mod = @import("agent/sampler.zig");
@@ -40,6 +42,7 @@ pub const App = struct {
     sampler: sampler_mod.Sampler = .{},
     streams: std.atomic.Value(u32) = .init(0),
     alerts: alerts_mod.Engine = .{},
+    updates: update_checker.Checker = .{},
     /// Null when the admin set `docker_socket = off`.
     docker: ?docker.Client = null,
     /// Null when the config lists no services.
@@ -164,6 +167,13 @@ pub fn dispatch(app: *App, io: Io, ctx: Ctx, body: []const u8, s: *Scratch) Repl
         const snap = app.sampler.latestCopy(io) orelse return err_unavailable;
         var w: Io.Writer = .fixed(&s.big);
         encode.writeSnapshot(&w, &snap) catch return err_internal;
+        return .{ .status = .ok, .body = w.buffered() };
+    }
+    if (std.mem.eql(u8, ctx.path, "/api/v1/update")) {
+        if (!get) return err_method;
+        _ = currentSession(app, io, ctx) orelse return err_unauth;
+        var w: Io.Writer = .fixed(&s.body);
+        update_checker.writeJson(&w, app.cfg.update_check, app.updates.copy(io)) catch return err_internal;
         return .{ .status = .ok, .body = w.buffered() };
     }
     if (std.mem.eql(u8, ctx.path, "/api/v1/audit")) {
@@ -629,6 +639,17 @@ pub fn run(io: Io, app: *App) !void {
     var group: Io.Group = .init;
     defer group.cancel(io);
     try group.concurrent(io, reaper, .{ io, &pool });
+    if (app.cfg.update_check) {
+        // Where to look: the admin's mirror if set, otherwise GitHub.
+        const meta_url = if (app.cfg.update_mirror.len > 0)
+            (update_release.Source.mirror(app.gpa, app.cfg.update_mirror) catch null)
+        else
+            update_release.Source.github;
+        if (meta_url) |src| {
+            group.concurrent(io, update_checker.Checker.run, .{ &app.updates, app.gpa, io, src.meta_url }) catch
+                log.warn("could not start the update checker", .{});
+        }
+    }
     try group.concurrent(io, sampler_mod.Sampler.run, .{ &app.sampler, io, app.cfg.sample_interval_ms, @as(?sampler_mod.Sampler.Hook, .{ .ctx = app, .call = App.onSample }) });
 
     while (true) {

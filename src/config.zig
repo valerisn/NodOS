@@ -3,6 +3,7 @@
 //! five line file, and the error messages here carry the line number.
 const std = @import("std");
 const systemd = @import("integrations/systemd.zig");
+const release = @import("update/release.zig");
 
 pub const LogLevel = enum { err, warn, info, debug };
 
@@ -26,6 +27,15 @@ pub const Config = struct {
     /// systemd units NodOS may show and control, without ".service". Empty
     /// means the services feature is off. An allowlist, never a pattern.
     services: []const []const u8 = &.{},
+    /// Look for new NodOS releases once in a while and show a notice in the
+    /// dashboard. The only outbound connection NodOS makes: one HTTPS request
+    /// to the release server every twelve hours, carrying nothing but a
+    /// "nodos/<version>" User-Agent. Nothing is ever installed by this.
+    update_check: bool = true,
+    /// Where releases come from, instead of GitHub. A directory served over
+    /// https (or over http on this machine) holding latest.json and a
+    /// download/<tag>/ tree. For private mirrors and tests.
+    update_mirror: []const u8 = "",
     /// How often the sampler runs. Below 500 ms the CPU cost stops being funny.
     sample_interval_ms: u32 = 2000,
 };
@@ -78,6 +88,13 @@ pub fn parse(arena: std.mem.Allocator, text: []const u8, diag: *Diagnostic) Pars
                 try list.append(arena, try arena.dupe(u8, name));
             }
             cfg.services = list.items;
+        } else if (std.mem.eql(u8, key, "update_check")) {
+            cfg.update_check = parseBool(value) orelse
+                return fail(diag, line_no, "update_check must be true or false");
+        } else if (std.mem.eql(u8, key, "update_mirror")) {
+            if (!release.urlAllowed(value))
+                return fail(diag, line_no, "update_mirror must be an https:// URL (http:// only for this machine)");
+            cfg.update_mirror = try arena.dupe(u8, value);
         } else if (std.mem.eql(u8, key, "trusted_proxy")) {
             _ = std.Io.net.IpAddress.parse(value, 0) catch
                 return fail(diag, line_no, "trusted_proxy is not a valid IP address");
@@ -100,6 +117,12 @@ pub fn parse(arena: std.mem.Allocator, text: []const u8, diag: *Diagnostic) Pars
         }
     }
     return cfg;
+}
+
+fn parseBool(value: []const u8) ?bool {
+    if (std.mem.eql(u8, value, "true")) return true;
+    if (std.mem.eql(u8, value, "false")) return false;
+    return null;
 }
 
 fn fail(diag: *Diagnostic, line: usize, message: []const u8) ParseError {
@@ -137,6 +160,21 @@ test "parses all keys" {
     try std.testing.expectEqualStrings("/tmp/nodos", cfg.data_dir);
     try std.testing.expectEqual(LogLevel.debug, cfg.log_level);
     try std.testing.expectEqual(@as(u32, 1000), cfg.sample_interval_ms);
+}
+
+test "update settings" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var d: Diagnostic = .{};
+    const def = try parse(arena.allocator(), "", &d);
+    try std.testing.expect(def.update_check);
+    try std.testing.expectEqualStrings("", def.update_mirror);
+    const c = try parse(arena.allocator(), "update_check = false\nupdate_mirror = https://mirror.example.lan/nodos\n", &d);
+    try std.testing.expect(!c.update_check);
+    try std.testing.expectEqualStrings("https://mirror.example.lan/nodos", c.update_mirror);
+    _ = try parse(arena.allocator(), "update_mirror = http://127.0.0.1:8099", &d);
+    try std.testing.expectError(error.InvalidConfig, parse(arena.allocator(), "update_mirror = http://evil.example.com/x", &d));
+    try std.testing.expectError(error.InvalidConfig, parse(arena.allocator(), "update_check = maybe", &d));
 }
 
 test "trusted_proxy must be an ip" {
