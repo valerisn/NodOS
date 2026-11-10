@@ -10,8 +10,15 @@ Expect an acknowledgement within 7 days. This is a volunteer project, so fix
 timelines depend on severity. Critical issues get priority. Please allow a
 reasonable disclosure window before publishing details.
 
-Supported versions: there is no release yet. Once there is, only the latest
-minor version receives security fixes.
+Supported versions: only the latest release receives fixes.
+
+| Version | Supported |
+| --- | --- |
+| 0.1.1 and newer | Yes, latest release only |
+| 0.1.0 | No. Unsupported since 0.1.1. No fixes, no help with problems; update with `nodos update` |
+
+v0.1.0 was published under the MIT License and is not covered by the newer
+NodOS Free Use License. That does not change that it is unsupported.
 
 ## Security model
 

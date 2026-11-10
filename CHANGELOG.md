@@ -5,6 +5,10 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-10
+
+v0.1.0 is no longer supported. Update to this release with `nodos update`.
+
 ### Changed
 
 - License changed from MIT to the NodOS Free Use License 1.1: free for personal, hobby, school and non-profit use; no selling, no monetizing in any way, no business use without written permission; rights end immediately on any breach. Source-available, not OSI open source. v0.1.0 remains under MIT for those who received it.
