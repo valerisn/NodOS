@@ -39,21 +39,43 @@ pub const Event = struct {
 
 pub const max_alerts = 48;
 
-pub const thresholds = struct {
-    pub const cpu_warn: f32 = 90;
-    pub const cpu_clear: f32 = 80;
-    pub const cpu_samples: u8 = 5;
-    pub const mem_warn: f32 = 90;
-    pub const mem_crit: f32 = 95;
-    pub const mem_clear: f32 = 85;
-    pub const disk_warn: f32 = 85;
-    pub const disk_crit: f32 = 95;
-    pub const disk_clear: f32 = 82;
-    pub const temp_warn: f32 = 80;
-    pub const temp_crit: f32 = 90;
-    pub const temp_clear: f32 = 75;
-    pub const swap_warn: f32 = 50;
-    pub const swap_clear: f32 = 40;
+/// Where alerts fire. The value an alert clears at sits a fixed margin below
+/// its warning level, so a reading hovering at the line does not flap.
+pub const Thresholds = struct {
+    cpu_warn: f32 = 90,
+    cpu_samples: u8 = 5,
+    mem_warn: f32 = 90,
+    mem_crit: f32 = 95,
+    disk_warn: f32 = 85,
+    disk_crit: f32 = 95,
+    temp_warn: f32 = 80,
+    temp_crit: f32 = 90,
+    swap_warn: f32 = 50,
+
+    pub fn cpuClear(t: Thresholds) f32 {
+        return t.cpu_warn - 10;
+    }
+    pub fn memClear(t: Thresholds) f32 {
+        return t.mem_warn - 5;
+    }
+    pub fn diskClear(t: Thresholds) f32 {
+        return t.disk_warn - 3;
+    }
+    pub fn tempClear(t: Thresholds) f32 {
+        return t.temp_warn - 5;
+    }
+    pub fn swapClear(t: Thresholds) f32 {
+        return t.swap_warn - 10;
+    }
+
+    /// Percentages must be sensible and warn must not sit above crit.
+    pub fn valid(t: Thresholds) bool {
+        const pcts = [_]f32{ t.cpu_warn, t.mem_warn, t.mem_crit, t.disk_warn, t.disk_crit, t.swap_warn };
+        for (pcts) |p| if (!(p >= 15 and p <= 100)) return false;
+        if (t.mem_warn > t.mem_crit or t.disk_warn > t.disk_crit) return false;
+        if (!(t.temp_warn >= 10 and t.temp_crit <= 150 and t.temp_warn <= t.temp_crit)) return false;
+        return t.cpu_samples >= 1 and t.cpu_samples <= 60;
+    }
 };
 
 pub const Engine = struct {
@@ -62,44 +84,46 @@ pub const Engine = struct {
     count: usize = 0,
     cpu_streak: u8 = 0,
     version: u32 = 1,
+    t: Thresholds = .{},
 
     pub fn evaluate(e: *Engine, io: Io, snap: *const collect.Snapshot, out: *[max_alerts]Event) usize {
         e.mutex.lockUncancelable(io);
         defer e.mutex.unlock(io);
         var n: usize = 0;
         const now = snap.ts_s;
+        const t = e.t;
 
-        if (snap.cpu_pct >= thresholds.cpu_warn) {
+        if (snap.cpu_pct >= t.cpu_warn) {
             e.cpu_streak +|= 1;
-        } else if (snap.cpu_pct < thresholds.cpu_clear) {
+        } else if (snap.cpu_pct < t.cpuClear()) {
             e.cpu_streak = 0;
         }
-        const cpu_want: ?Level = if (e.cpu_streak >= thresholds.cpu_samples) .warn else null;
+        const cpu_want: ?Level = if (e.cpu_streak >= t.cpu_samples) .warn else null;
         n = e.apply(.cpu_high, "", cpu_want, snap.cpu_pct, e.cpu_streak == 0, now, out, n);
 
         if (snap.mem.total_kb > 0) {
             const used = pct(snap.mem.usedKb(), snap.mem.total_kb);
-            const want = level(used, thresholds.mem_warn, thresholds.mem_crit);
-            n = e.apply(.memory_high, "", want, used, used < thresholds.mem_clear, now, out, n);
+            const want = level(used, t.mem_warn, t.mem_crit);
+            n = e.apply(.memory_high, "", want, used, used < t.memClear(), now, out, n);
         }
 
         if (snap.mem.swap_total_kb > 0) {
             const used = pct(snap.mem.swap_total_kb -| snap.mem.swap_free_kb, snap.mem.swap_total_kb);
-            const want: ?Level = if (used >= thresholds.swap_warn) .warn else null;
-            n = e.apply(.swap_high, "", want, used, used < thresholds.swap_clear, now, out, n);
+            const want: ?Level = if (used >= t.swap_warn) .warn else null;
+            n = e.apply(.swap_high, "", want, used, used < t.swapClear(), now, out, n);
         }
 
         for (snap.mounts[0..snap.mount_count]) |m| {
             const u = m.usage orelse continue;
             if (u.total_bytes == 0) continue;
             const used = pct(u.total_bytes -| u.free_bytes, u.total_bytes);
-            const want = level(used, thresholds.disk_warn, thresholds.disk_crit);
-            n = e.apply(.disk_high, m.path.slice(), want, used, used < thresholds.disk_clear, now, out, n);
+            const want = level(used, t.disk_warn, t.disk_crit);
+            n = e.apply(.disk_high, m.path.slice(), want, used, used < t.diskClear(), now, out, n);
         }
 
-        for (snap.temps[0..snap.temp_count]) |t| {
-            const want = level(t.celsius, thresholds.temp_warn, thresholds.temp_crit);
-            n = e.apply(.temperature_high, t.label.slice(), want, t.celsius, t.celsius < thresholds.temp_clear, now, out, n);
+        for (snap.temps[0..snap.temp_count]) |temp| {
+            const want = level(temp.celsius, t.temp_warn, t.temp_crit);
+            n = e.apply(.temperature_high, temp.label.slice(), want, temp.celsius, temp.celsius < t.tempClear(), now, out, n);
         }
 
         var i: usize = 0;

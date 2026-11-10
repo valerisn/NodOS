@@ -2,6 +2,7 @@ const std = @import("std");
 const systemd = @import("integrations/systemd.zig");
 const release = @import("update/release.zig");
 const notify = @import("notify.zig");
+const alerts = @import("alerts.zig");
 
 pub const LogLevel = enum { err, warn, info, debug };
 
@@ -18,6 +19,7 @@ pub const Config = struct {
     update_check: bool = true,
     update_mirror: []const u8 = "",
     webhook_url: []const u8 = "",
+    alerts: alerts.Thresholds = .{},
     sample_interval_ms: u32 = 2000,
 };
 
@@ -73,6 +75,8 @@ pub fn parse(arena: std.mem.Allocator, text: []const u8, diag: *Diagnostic) Pars
             if (!release.urlAllowed(value))
                 return fail(diag, line_no, "update_mirror must be an https:// URL (http:// only for this machine)");
             cfg.update_mirror = try arena.dupe(u8, value);
+        } else if (std.mem.startsWith(u8, key, "alert_")) {
+            try parseAlertKey(&cfg.alerts, key["alert_".len..], value, diag, line_no);
         } else if (std.mem.eql(u8, key, "webhook_url")) {
             if (!notify.urlOk(value))
                 return fail(diag, line_no, "webhook_url must be an http:// or https:// URL without spaces");
@@ -99,6 +103,58 @@ pub fn parse(arena: std.mem.Allocator, text: []const u8, diag: *Diagnostic) Pars
         }
     }
     return cfg;
+}
+
+/// What the Settings page shows. Anything that can carry a secret (the webhook
+/// address, a mirror URL) is reduced to "is it set".
+pub fn writeSettings(w: *std.Io.Writer, cfg: Config, version: []const u8) std.Io.Writer.Error!void {
+    var j: std.json.Stringify = .{ .writer = w };
+    try j.beginObject();
+    try j.objectField("version");
+    try j.write(version);
+    try j.objectField("listen");
+    try j.write(cfg.listen);
+    try j.objectField("port");
+    try j.write(cfg.port);
+    try j.objectField("data_dir");
+    try j.write(cfg.data_dir);
+    try j.objectField("log_level");
+    try j.write(@tagName(cfg.log_level));
+    try j.objectField("secure_cookies");
+    try j.write(cfg.secure_cookies);
+    try j.objectField("trusted_proxy");
+    try j.write(cfg.trusted_proxy);
+    try j.objectField("docker_socket");
+    try j.write(cfg.docker_socket);
+    try j.objectField("services");
+    try j.write(cfg.services);
+    try j.objectField("sample_interval_ms");
+    try j.write(cfg.sample_interval_ms);
+    try j.objectField("update_check");
+    try j.write(cfg.update_check);
+    try j.objectField("update_mirror_set");
+    try j.write(cfg.update_mirror.len > 0);
+    try j.objectField("webhook_set");
+    try j.write(cfg.webhook_url.len > 0);
+    try j.objectField("alerts");
+    try j.beginObject();
+    inline for (.{ "cpu_warn", "cpu_samples", "mem_warn", "mem_crit", "disk_warn", "disk_crit", "temp_warn", "temp_crit", "swap_warn" }) |name| {
+        try j.objectField(name);
+        try j.write(@field(cfg.alerts, name));
+    }
+    try j.endObject();
+    try j.endObject();
+}
+
+fn parseAlertKey(t: *alerts.Thresholds, key: []const u8, value: []const u8, diag: *Diagnostic, line_no: usize) ParseError!void {
+    if (std.mem.eql(u8, key, "cpu_samples")) {
+        t.cpu_samples = std.fmt.parseInt(u8, value, 10) catch return fail(diag, line_no, "alert_cpu_samples must be a number from 1 to 60");
+    } else {
+        const v = std.fmt.parseFloat(f32, value) catch return fail(diag, line_no, "alert thresholds must be numbers");
+        if (!std.math.isFinite(v)) return fail(diag, line_no, "alert thresholds must be numbers");
+        if (std.mem.eql(u8, key, "cpu_warn")) t.cpu_warn = v else if (std.mem.eql(u8, key, "mem_warn")) t.mem_warn = v else if (std.mem.eql(u8, key, "mem_crit")) t.mem_crit = v else if (std.mem.eql(u8, key, "disk_warn")) t.disk_warn = v else if (std.mem.eql(u8, key, "disk_crit")) t.disk_crit = v else if (std.mem.eql(u8, key, "temp_warn")) t.temp_warn = v else if (std.mem.eql(u8, key, "temp_crit")) t.temp_crit = v else if (std.mem.eql(u8, key, "swap_warn")) t.swap_warn = v else return fail(diag, line_no, "unknown key");
+    }
+    if (!t.valid()) return fail(diag, line_no, "alert thresholds out of range (percentages 15-100, warn at or below crit, temperatures 10-150)");
 }
 
 fn parseBool(value: []const u8) ?bool {
@@ -157,6 +213,43 @@ test "update settings" {
     _ = try parse(arena.allocator(), "update_mirror = http://127.0.0.1:8099", &d);
     try std.testing.expectError(error.InvalidConfig, parse(arena.allocator(), "update_mirror = http://evil.example.com/x", &d));
     try std.testing.expectError(error.InvalidConfig, parse(arena.allocator(), "update_check = maybe", &d));
+}
+
+test "alert thresholds are configurable and checked" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var d: Diagnostic = .{};
+    const def = try parse(arena.allocator(), "", &d);
+    try std.testing.expectEqual(@as(f32, 85), def.alerts.disk_warn);
+    const c = try parse(arena.allocator(), "alert_disk_warn = 70\nalert_disk_crit = 90\nalert_temp_warn = 65.5\nalert_cpu_samples = 3\n", &d);
+    try std.testing.expectEqual(@as(f32, 70), c.alerts.disk_warn);
+    try std.testing.expectEqual(@as(f32, 65.5), c.alerts.temp_warn);
+    try std.testing.expectEqual(@as(u8, 3), c.alerts.cpu_samples);
+    try std.testing.expectEqual(@as(f32, 67), c.alerts.diskClear());
+    try std.testing.expectError(error.InvalidConfig, parse(arena.allocator(), "alert_disk_warn = 99\n", &d));
+    try std.testing.expectError(error.InvalidConfig, parse(arena.allocator(), "alert_disk_warn = abc\n", &d));
+    try std.testing.expectError(error.InvalidConfig, parse(arena.allocator(), "alert_disk_warn = nan\n", &d));
+    try std.testing.expectError(error.InvalidConfig, parse(arena.allocator(), "alert_mem_warn = 5\n", &d));
+    try std.testing.expectError(error.InvalidConfig, parse(arena.allocator(), "alert_bogus = 5\n", &d));
+    try std.testing.expectError(error.InvalidConfig, parse(arena.allocator(), "alert_cpu_samples = 0\n", &d));
+}
+
+test "settings json hides secrets and parses" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var d: Diagnostic = .{};
+    const cfg = try parse(arena.allocator(), "webhook_url = https://ntfy.sh/secret-topic\nupdate_mirror = https://m.example/secret\nservices = ssh, nginx\n", &d);
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    try writeSettings(&out.writer, cfg, "1.2.3");
+    try std.testing.expect(std.mem.find(u8, out.written(), "secret") == null);
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, out.written(), .{});
+    defer parsed.deinit();
+    const o = parsed.value.object;
+    try std.testing.expect(o.get("webhook_set").?.bool);
+    try std.testing.expect(o.get("update_mirror_set").?.bool);
+    try std.testing.expectEqual(@as(usize, 2), o.get("services").?.array.items.len);
+    try std.testing.expectEqual(@as(i64, 85), o.get("alerts").?.object.get("disk_warn").?.integer);
 }
 
 test "webhook_url" {

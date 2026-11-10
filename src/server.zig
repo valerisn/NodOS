@@ -53,6 +53,7 @@ pub const App = struct {
 
     pub fn init(gpa: std.mem.Allocator, io: Io, cfg: config.Config, users: users_mod.Users) !App {
         var app: App = .{ .gpa = gpa, .cfg = cfg, .users = users };
+        app.alerts.t = cfg.alerts;
         if (!std.mem.eql(u8, cfg.docker_socket, "off")) {
             app.docker = .{ .io = io, .socket_path = cfg.docker_socket };
         }
@@ -206,6 +207,14 @@ pub fn dispatch(app: *App, io: Io, ctx: Ctx, body: []const u8, s: *Scratch) Repl
         const tail = log_file.readTail(io, &read_buf) catch return err_internal;
         var w: Io.Writer = .fixed(&s.big);
         audit.writeEntries(&w, tail.bytes, tail.from_start, limit) catch return err_internal;
+        return .{ .status = .ok, .body = w.buffered() };
+    }
+    if (std.mem.eql(u8, ctx.path, "/api/v1/settings")) {
+        if (!get) return err_method;
+        const sess = currentSession(app, io, ctx) orelse return err_unauth;
+        if (sess.role != .admin) return err_forbidden;
+        var w: Io.Writer = .fixed(&s.big);
+        config.writeSettings(&w, app.cfg, @import("build_options").version) catch return err_internal;
         return .{ .status = .ok, .body = w.buffered() };
     }
     if (std.mem.eql(u8, ctx.path, "/api/v1/alerts")) {
@@ -1107,6 +1116,30 @@ test "alerts route needs a session and reports raised alerts" {
     try std.testing.expectEqual(http.Status.ok, r.status);
     try std.testing.expect(std.mem.find(u8, r.body, "\"subject\":\"/data\"") != null);
     try std.testing.expect(std.mem.find(u8, r.body, "\"level\":\"crit\"") != null);
+}
+
+test "settings are admin only and carry no secrets" {
+    const io = std.testing.io;
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var app = try testApp(arena.allocator());
+    defer app.deinit(io);
+    app.cfg.webhook_url = "https://hooks.example/abc123";
+    var s: Scratch = .{};
+    try std.testing.expectEqual(http.Status.unauthorized, dispatch(&app, io, testCtx(.GET, "/api/v1/settings"), "", &s).status);
+
+    const viewer = try app.sessions.create(app.gpa, io, 2, .viewer, 1000);
+    var v = testCtx(.GET, "/api/v1/settings");
+    v.cookie_token = viewer.token;
+    try std.testing.expectEqual(http.Status.forbidden, dispatch(&app, io, v, "", &s).status);
+
+    const admin = try app.sessions.create(app.gpa, io, 1, .admin, 1000);
+    var a = testCtx(.GET, "/api/v1/settings");
+    a.cookie_token = admin.token;
+    const r = dispatch(&app, io, a, "", &s);
+    try std.testing.expectEqual(http.Status.ok, r.status);
+    try std.testing.expect(std.mem.find(u8, r.body, "\"webhook_set\":true") != null);
+    try std.testing.expect(std.mem.find(u8, r.body, "abc123") == null);
 }
 
 test "docker routes enforce auth, role, csrf and validation before touching docker" {
