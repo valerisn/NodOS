@@ -20,6 +20,7 @@ pub const apps = @import("apps.zig");
 pub const installer = @import("installer.zig");
 pub const tokens = @import("tokens.zig");
 pub const servers = @import("servers.zig");
+pub const remote = @import("remote.zig");
 pub const update = struct {
     pub const version = @import("update/version.zig");
     pub const verify = @import("update/verify.zig");
