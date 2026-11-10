@@ -75,8 +75,8 @@ fi
 set_key() {
     key="$1"
     value="$2"
-    if grep -Eq "^[[:space:]]*$key[[:space:]]*=" "$CONF"; then
-        sed -i -E "s|^[[:space:]]*$key[[:space:]]*=.*|$key = $value|" "$CONF"
+    if grep -Eq "^[[:space:]]*${key}[[:space:]]*=" "$CONF"; then
+        sed -i -E "s|^[[:space:]]*${key}[[:space:]]*=.*|${key} = ${value}|" "$CONF"
     else
         printf '%s = %s\n' "$key" "$value" >> "$CONF"
     fi

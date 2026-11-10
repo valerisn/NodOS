@@ -27,7 +27,9 @@ for bad in 'a b' 'x;rm' '-x' '.a' 'a.' ''; do
     if bash "$HERE/setup-tls.sh" "$bad" --dry-run >/dev/null 2>&1; then fail "accepted bad name '$bad'"; fi
 done
 
-PATH="/usr/bin:/bin" bash -c "command -v caddy" >/dev/null 2>&1 && echo "note: real caddy present, skipping missing-caddy check" || {
-    if PATH="/usr/bin:/bin" bash "$HERE/setup-tls.sh" x.lan >/dev/null 2>&1; then fail "ran without caddy"; fi
-}
+if PATH="/usr/bin:/bin" bash -c "command -v caddy" >/dev/null 2>&1; then
+    echo "note: real caddy present, skipping missing-caddy check"
+elif PATH="/usr/bin:/bin" bash "$HERE/setup-tls.sh" x.lan >/dev/null 2>&1; then
+    fail "ran without caddy"
+fi
 echo "setup-tls test passed"

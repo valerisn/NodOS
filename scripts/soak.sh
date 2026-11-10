@@ -65,7 +65,7 @@ COOKIE="Cookie: nodos_session=$TOKEN"
 LOAD_PID=$!
 
 rss_kb() { awk '/^VmRSS:/ {print $2}' "/proc/$SERVER_PID/status"; }
-fds() { ls "/proc/$SERVER_PID/fd" | wc -l; }
+fds() { find "/proc/$SERVER_PID/fd" -mindepth 1 | wc -l; }
 
 WARMUP=$(( MINUTES * 60 / 5 ))
 [ "$WARMUP" -ge 20 ] || WARMUP=20
