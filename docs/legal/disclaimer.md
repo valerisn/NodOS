@@ -1,6 +1,6 @@
 # Disclaimer
 
-NodOS is provided under the MIT License, "as is", without warranty of any kind.
+NodOS is provided under the NodOS Free Use License, "as is", without warranty of any kind.
 The authors and contributors are not liable for any damage, data loss, downtime
 or security incident that follows from using it.
 

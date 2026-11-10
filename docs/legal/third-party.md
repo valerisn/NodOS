@@ -5,7 +5,7 @@ dashboard loads no scripts, fonts, styles or images from anywhere else.
 
 ## Zig standard library
 
-Every NodOS binary contains parts of the Zig standard library, compiled in.
+Every NodOS binary contains parts of the Zig standard library, compiled in. These parts are MIT licensed; the rest of NodOS is under the NodOS Free Use License.
 
 ```
 The MIT License (Expat)

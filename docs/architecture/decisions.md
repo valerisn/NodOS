@@ -45,14 +45,16 @@ passes through proxies more reliably. WebSocket is only worth its complexity if
 we need browser-to-server streaming, which a future web terminal would. We do
 not plan a web terminal (see Security). Decision stands unless that changes.
 
-## D6. License: MIT
+## D6. License: NodOS Free Use License (changed from MIT after v0.1.0)
 
-Short, permissive, universally understood. Apache-2.0 adds a patent grant,
-which matters more for corporate contributors than for a home server tool.
-Copyleft (GPL/AGPL) would deter some contributors and does not protect against
-the realistic threats to this project. Changing license later needs every
-contributor's consent, so this is the one to get right now. Say so if you want
-Apache-2.0 instead.
+The maintainer wants NodOS free for everyone to use, read, modify and share, and
+never sold or monetized. No standard open source license does that: the Open
+Source Definition forbids restricting commercial use. So NodOS now uses its own
+license, which is source-available rather than open source. Consequences:
+distros and some package indexes only carry OSI-approved licenses, some
+companies will not touch non-commercial code, and the text has had no lawyer's
+review. The v0.1.0 release stays under MIT for the people who received it. A
+well-tested alternative with the same intent is PolyForm Noncommercial 1.0.0.
 
 ## D7. No arbitrary command execution, ever
 

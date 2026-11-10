@@ -8,16 +8,15 @@
 
 <p align="center">
   <a href="https://github.com/valerisn/NodOS/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/valerisn/NodOS/actions/workflows/ci.yml/badge.svg"></a>
-  <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue">
+  <img alt="License: NodOS Free Use" src="https://img.shields.io/badge/license-free%20use%20only-blue">
   <img alt="Zig 0.17.0" src="https://img.shields.io/badge/zig-0.17.0-f7a41d">
   <img alt="Monitoring: Linux x86_64 and aarch64" src="https://img.shields.io/badge/monitoring-linux%20x86__64%20%7C%20aarch64-informational">
   <img alt="Status: pre-alpha" src="https://img.shields.io/badge/status-pre--alpha-orange">
 </p>
 
-> **Status: pre-alpha.** Everything below is built and tested, but there is no
-> tagged release yet and it has not been run on a real home server for long.
-> Read the [security notes](docs/security/README.md) before exposing it to
-> anything. Release and download badges will appear with the first release.
+> **Status: early (v0.1).** Everything below is built and tested in CI, but it has
+> not been run on a real home server for long. Read the
+> [security notes](docs/security/README.md) before exposing it to anything.
 
 <p align="center">
   <img src="docs/images/overview.jpg" alt="NodOS overview page: live strip charts for processor, memory and network, with a disk alert above them" width="760">
@@ -133,4 +132,4 @@ Privately, as described in [SECURITY.md](SECURITY.md).
 
 ## License
 
-[MIT](LICENSE). See [NOTICE](NOTICE) and the [legal page](docs/legal/README.md) for the disclaimer, privacy, trademark and contributor terms.
+[NodOS Free Use License](LICENSE): use it, read it, change it and share it for free; do not sell it or make money from it. This is source-available, not open source in the OSI sense. See [NOTICE](NOTICE) and the [legal page](docs/legal/README.md) for the disclaimer, privacy, trademark and contributor terms.
