@@ -25,6 +25,10 @@ web request, and its own privacy statement applies to that. Set
 `update_check = false` to stop it. `nodos update` contacts the same server only
 when you run it.
 
+If you set `webhook_url`, NodOS also sends alert messages (host name, alert
+type, affected mount or interface, value) to that address and nowhere else.
+The address is yours; the receiver's privacy terms apply.
+
 There is no telemetry, no crash reporting, and no analytics. The dashboard sets
 one cookie, a session cookie needed to stay signed in. It uses no third-party
 resources.

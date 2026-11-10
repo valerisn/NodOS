@@ -10,6 +10,7 @@ const ratelimit = @import("ratelimit.zig");
 const audit = @import("audit.zig");
 const assets = @import("assets.zig");
 const alerts_mod = @import("alerts.zig");
+const notify = @import("notify.zig");
 const update_checker = @import("update/checker.zig");
 const update_release = @import("update/release.zig");
 const docker = @import("integrations/docker.zig");
@@ -39,6 +40,8 @@ pub const App = struct {
     streams: std.atomic.Value(u32) = .init(0),
     alerts: alerts_mod.Engine = .{},
     updates: update_checker.Checker = .{},
+    tasks: ?*Io.Group = null,
+    notify_inflight: std.atomic.Value(u32) = .init(0),
     docker: ?docker.Client = null,
     systemd: ?systemd.Client = null,
     audit_log: ?audit.Log = null,
@@ -86,7 +89,23 @@ pub const App = struct {
                 log.warn("alert {s}: {s}", .{ @tagName(ev.what), target });
             }
             app.recordTarget(io, snap.ts_s, "system", action, target, true, "");
+            app.sendWebhook(io, snap.hostname.slice(), ev);
         }
+    }
+
+    fn sendWebhook(app: *App, io: Io, host: []const u8, ev: alerts_mod.Event) void {
+        if (app.cfg.webhook_url.len == 0) return;
+        const tasks = app.tasks orelse return;
+        const job = notify.prepare(app.gpa, &app.notify_inflight, app.cfg.webhook_url, host, ev) orelse {
+            log.warn("webhook queue is full, dropping a notification", .{});
+            return;
+        };
+        tasks.concurrent(io, notify.deliver, .{ io, job }) catch {
+            _ = app.notify_inflight.fetchSub(1, .acq_rel);
+            app.gpa.free(job.url);
+            app.gpa.free(job.body);
+            app.gpa.destroy(job);
+        };
     }
 
     fn recordTarget(app: *App, io: Io, now_s: i64, actor: []const u8, action: []const u8, target: []const u8, ok: bool, ip: []const u8) void {
@@ -625,6 +644,8 @@ pub fn run(io: Io, app: *App) !void {
 
     var group: Io.Group = .init;
     defer group.cancel(io);
+    app.tasks = &group;
+    defer app.tasks = null;
     try group.concurrent(io, reaper, .{ io, &pool });
     if (app.cfg.update_check) {
         const meta_url = if (app.cfg.update_mirror.len > 0)

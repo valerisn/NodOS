@@ -1,6 +1,7 @@
 const std = @import("std");
 const systemd = @import("integrations/systemd.zig");
 const release = @import("update/release.zig");
+const notify = @import("notify.zig");
 
 pub const LogLevel = enum { err, warn, info, debug };
 
@@ -16,6 +17,7 @@ pub const Config = struct {
     // the only outbound connection nodos makes: a User-Agent and nothing else
     update_check: bool = true,
     update_mirror: []const u8 = "",
+    webhook_url: []const u8 = "",
     sample_interval_ms: u32 = 2000,
 };
 
@@ -71,6 +73,10 @@ pub fn parse(arena: std.mem.Allocator, text: []const u8, diag: *Diagnostic) Pars
             if (!release.urlAllowed(value))
                 return fail(diag, line_no, "update_mirror must be an https:// URL (http:// only for this machine)");
             cfg.update_mirror = try arena.dupe(u8, value);
+        } else if (std.mem.eql(u8, key, "webhook_url")) {
+            if (!notify.urlOk(value))
+                return fail(diag, line_no, "webhook_url must be an http:// or https:// URL without spaces");
+            cfg.webhook_url = try arena.dupe(u8, value);
         } else if (std.mem.eql(u8, key, "trusted_proxy")) {
             _ = std.Io.net.IpAddress.parse(value, 0) catch
                 return fail(diag, line_no, "trusted_proxy is not a valid IP address");
@@ -151,6 +157,17 @@ test "update settings" {
     _ = try parse(arena.allocator(), "update_mirror = http://127.0.0.1:8099", &d);
     try std.testing.expectError(error.InvalidConfig, parse(arena.allocator(), "update_mirror = http://evil.example.com/x", &d));
     try std.testing.expectError(error.InvalidConfig, parse(arena.allocator(), "update_check = maybe", &d));
+}
+
+test "webhook_url" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var d: Diagnostic = .{};
+    try std.testing.expectEqualStrings("", (try parse(arena.allocator(), "", &d)).webhook_url);
+    const c = try parse(arena.allocator(), "webhook_url = https://ntfy.sh/mytopic", &d);
+    try std.testing.expectEqualStrings("https://ntfy.sh/mytopic", c.webhook_url);
+    try std.testing.expectError(error.InvalidConfig, parse(arena.allocator(), "webhook_url = ftp://x/y", &d));
+    try std.testing.expectError(error.InvalidConfig, parse(arena.allocator(), "webhook_url = https://a b", &d));
 }
 
 test "trusted_proxy must be an ip" {

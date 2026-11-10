@@ -47,7 +47,7 @@ implemented and tested.
 - [x] systemd services: status, start, stop, logs, allowlisted per unit (parsers tested; real-systemd status check in CI smoke test)
 - [x] Alerts: threshold rules with hysteresis, audit-logged, live in the dashboard (in-app only; outbound webhooks and email are not built)
 - [x] Audit log viewer (admin)
-- [ ] Outbound notifications (email or webhook)
+- [x] Outbound notifications: webhook (`webhook_url`, works with ntfy, Gotify, Slack, Discord). Email is not built
 
 ## Phase 6: Release (in progress)
 

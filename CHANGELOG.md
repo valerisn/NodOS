@@ -21,6 +21,8 @@ Found in the pre-release review, all fixed before any release. Details in
 
 ### Added
 
+- Alert webhook (`webhook_url`): JSON POST on raised, escalated and cleared alerts.
+
 **Server and security**
 - HTTP server on `std.http.Server`: login, logout, session info, health, with
   security headers and a strict CSP on every response.

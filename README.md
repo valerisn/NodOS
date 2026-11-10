@@ -80,7 +80,8 @@ upgrading and uninstalling.
 
 ## Privacy
 
-NodOS makes one outbound connection: about every twelve hours it asks GitHub
+By default NodOS makes one outbound connection (a second only if you configure
+`webhook_url` for alert messages): about every twelve hours it asks GitHub
 whether a newer release exists, sending only a `nodos/<version>` User-Agent.
 Set `update_check = false` to turn that off. Nothing about your machine is ever
 sent anywhere.

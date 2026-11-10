@@ -42,3 +42,8 @@ secure_cookies = true
 
 # Seconds between samples, in milliseconds. 500 to 60000.
 # sample_interval_ms = 2000
+
+# Post a JSON message here when an alert is raised, escalated or cleared.
+# Works with ntfy, Gotify, Slack and Discord style webhooks. Use https unless
+# the receiver is on your own network: the address may contain a secret token.
+# webhook_url = https://ntfy.sh/your-private-topic
