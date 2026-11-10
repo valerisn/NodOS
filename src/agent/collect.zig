@@ -1,12 +1,8 @@
-//! Turns raw host files into a Snapshot. The file source is a type parameter:
-//! Linux uses `LinuxSource` (real /proc and /sys), tests use a fixture map, so
-//! the whole pipeline is testable on a machine that has no /proc.
 const std = @import("std");
 const builtin = @import("builtin");
 const Io = std.Io;
 const proc = @import("proc.zig");
 
-/// Fixed-capacity string so Snapshot needs no allocator and copies cheaply.
 pub fn Str(comptime N: usize) type {
     return struct {
         buf: [N]u8 = undefined,
@@ -28,7 +24,6 @@ pub fn Str(comptime N: usize) type {
 pub const FsUsage = struct {
     total_bytes: u64,
     free_bytes: u64,
-    /// Free space available to unprivileged users (excludes the root reserve).
     avail_bytes: u64,
 };
 
@@ -95,7 +90,6 @@ pub fn Collector(comptime Source: type) type {
         prev_cpu: ?proc.CpuStat = null,
         prev_net: ?proc.NetDev = null,
         prev_time_ms: i64 = 0,
-        /// Static facts: read once, they don't change while we run.
         hostname: Str(63) = .{},
         kernel: Str(63) = .{},
         os_name: Str(63) = .{},
@@ -103,11 +97,7 @@ pub fn Collector(comptime Source: type) type {
 
         const Self = @This();
 
-        /// `now_ms` must come from a monotonic clock; it only feeds rate math.
-        /// `wall_s` is the timestamp stamped on the snapshot.
         pub fn sample(c: *Self, now_ms: i64, wall_s: i64) CollectError!Snapshot {
-            // One scratch buffer for every file. Biggest realistic input is
-            // /proc/stat on a 128 core box, around 16 KB.
             var buf: [48 * 1024]u8 = undefined;
             var snap: Snapshot = .{ .ts_s = wall_s };
 
@@ -121,7 +111,6 @@ pub fn Collector(comptime Source: type) type {
             else
                 0;
 
-            // cpu
             const cpu = proc.parseCpuStat(try c.read(paths.stat, &buf)) catch return error.Malformed;
             if (c.prev_cpu) |prev| {
                 snap.cpu_pct = proc.cpuPercent(prev.all, cpu.all);
@@ -132,10 +121,8 @@ pub fn Collector(comptime Source: type) type {
             }
             c.prev_cpu = cpu;
 
-            // memory
             snap.mem = proc.parseMeminfo(try c.read(paths.meminfo, &buf)) catch return error.Malformed;
 
-            // load and uptime are nice to have; a missing one must not kill the sample
             if (c.read(paths.uptime, &buf)) |t| {
                 snap.uptime_s = proc.parseUptime(t) catch 0;
             } else |_| {}
@@ -143,7 +130,6 @@ pub fn Collector(comptime Source: type) type {
                 snap.load = proc.parseLoadavg(t) catch snap.load;
             } else |_| {}
 
-            // network
             const net = proc.parseNetDev(try c.read(paths.netdev, &buf)) catch return error.Malformed;
             for (net.ifaces[0..net.count], 0..) |cur, i| {
                 var r: IfaceRate = .{ .rx_bytes = cur.rx_bytes, .tx_bytes = cur.tx_bytes, .rx_errs = cur.rx_errs, .tx_errs = cur.tx_errs };
@@ -157,7 +143,6 @@ pub fn Collector(comptime Source: type) type {
             snap.iface_count = net.count;
             c.prev_net = net;
 
-            // storage: an unreadable mount table just means an empty list
             if (c.read(paths.mounts, &buf)) |t| {
                 if (proc.parseMounts(t)) |mounts| {
                     for (mounts.items[0..mounts.count], 0..) |*m, i| {
@@ -198,17 +183,12 @@ pub fn Collector(comptime Source: type) type {
     };
 }
 
-/// Bytes per second. A counter that went backwards (interface reset, 32-bit
-/// wrap) reports 0 for that tick instead of a bogus petabyte rate.
 fn rate(old: u64, cur: u64, dt_s: f64) u64 {
     if (cur < old) return 0;
     const bps = @as(f64, @floatFromInt(cur - old)) / dt_s;
     return @intFromFloat(bps);
 }
 
-// ---------------------------------------------------------------- real source
-
-/// Reads the live system. Only does anything on 64-bit Linux.
 pub const LinuxSource = struct {
     io: Io,
 
@@ -216,27 +196,23 @@ pub const LinuxSource = struct {
         if (builtin.os.tag != .linux) return error.Unsupported;
         var file = Io.Dir.cwd().openFile(s.io, path, .{}) catch return error.Unreadable;
         defer file.close(s.io);
-        // Tiny reader buffer on purpose: we only use it to drive readSliceShort
-        // into the caller's big buffer. /proc files report size 0, so anything
-        // that trusts stat() would read nothing.
+        // /proc files claim size 0, so don't trust stat for the length
         var small: [512]u8 = undefined;
         var fr = file.reader(s.io, &small);
         const n = fr.interface.readSliceShort(buf) catch return error.Unreadable;
-        if (n == buf.len) return error.Unreadable; // would have truncated
+        if (n == buf.len) return error.Unreadable;
         return buf[0..n];
     }
 
     pub fn fsUsage(_: *LinuxSource, path: []const u8) ?FsUsage {
         if (builtin.os.tag != .linux) return null;
         const arch = builtin.cpu.arch;
-        if (arch != .x86_64 and arch != .aarch64) return null; // statfs layout below is 64-bit only
+        if (arch != .x86_64 and arch != .aarch64) return null;
         var zpath: [proc.max_path + 1]u8 = undefined;
         if (path.len >= proc.max_path) return null;
         @memcpy(zpath[0..path.len], path);
         zpath[path.len] = 0;
 
-        // Hand-rolled because std has no statfs wrapper. Layout is the kernel's
-        // struct statfs on 64-bit: eleven 8 byte fields then spare.
         const Statfs = extern struct {
             f_type: i64,
             f_bsize: i64,
@@ -262,7 +238,6 @@ pub const LinuxSource = struct {
         };
     }
 
-    /// Fills `out` from /sys/class/thermal, returns how many were found.
     pub fn temps(s: *LinuxSource, out: *[max_temps]Temp) u8 {
         if (builtin.os.tag != .linux) return 0;
         var n: u8 = 0;
@@ -289,15 +264,8 @@ pub const LinuxSource = struct {
     }
 };
 
-// ---------------------------------------------------------------- dev source
-
-/// Synthetic host for developing the dashboard and exercising streaming on a
-/// machine with no /proc (Windows, macOS). Only reachable via
-/// `zig build -Dfake-host=true`. Never enabled in release builds.
 pub const FakeSource = struct {
     tick: u64 = 0,
-    // Cumulative counters, like the real kernel ones: they only ever grow.
-    // Advanced once per sample in temps(), which the collector calls last.
     busy: u64 = 0,
     idle: u64 = 0,
     rx: u64 = 0,
@@ -309,7 +277,6 @@ pub const FakeSource = struct {
         if (eql(u8, path, "/proc/stat")) {
             const b = s.busy;
             const i = s.idle;
-            // Cores are fixed multiples of the total so they stay monotonic too.
             return std.fmt.bufPrint(buf, "cpu  {d} 0 0 {d} 0 0 0 0\ncpu0 {d} 0 0 {d} 0 0 0 0\ncpu1 {d} 0 0 {d} 0 0 0 0\ncpu2 {d} 0 0 {d} 0 0 0 0\ncpu3 {d} 0 0 {d} 0 0 0 0\n", .{
                 b * 4, i * 4, b / 2, i, b * 3 / 2, i, b, i, b * 2 / 3, i,
             }) catch error.Unreadable;
@@ -319,10 +286,6 @@ pub const FakeSource = struct {
             return std.fmt.bufPrint(buf, "MemTotal: 16318244 kB\nMemFree: 1000000 kB\nMemAvailable: {d} kB\nBuffers: 200000 kB\nCached: 4000000 kB\nSwapTotal: 2097148 kB\nSwapFree: 2090000 kB\n", .{avail}) catch error.Unreadable;
         }
         if (eql(u8, path, "/proc/net/dev")) {
-            // A docker host has a veth per container, and that is what makes real
-            // snapshots big. Ten of them keeps the fake payload past the
-            // streaming writer's buffer, which is exactly the shape that once
-            // broke the live stream on Linux and not here.
             const veths = "  veth0: 1 1 0 0 0 0 0 0 1 1 0 0 0 0 0 0\n  veth1: 1 1 0 0 0 0 0 0 1 1 0 0 0 0 0 0\n  veth2: 1 1 0 0 0 0 0 0 1 1 0 0 0 0 0 0\n  veth3: 1 1 0 0 0 0 0 0 1 1 0 0 0 0 0 0\n  veth4: 1 1 0 0 0 0 0 0 1 1 0 0 0 0 0 0\n  veth5: 1 1 0 0 0 0 0 0 1 1 0 0 0 0 0 0\n  veth6: 1 1 0 0 0 0 0 0 1 1 0 0 0 0 0 0\n  veth7: 1 1 0 0 0 0 0 0 1 1 0 0 0 0 0 0\n  veth8: 1 1 0 0 0 0 0 0 1 1 0 0 0 0 0 0\n  veth9: 1 1 0 0 0 0 0 0 1 1 0 0 0 0 0 0\n";
             return std.fmt.bufPrint(buf, "h\nh\n    lo: 5000 50 0 0 0 0 0 0 5000 50 0 0 0 0 0 0\n  eth0: {d} {d} 0 0 0 0 0 0 {d} {d} 0 0 0 0 0 0\n{s}", .{ s.rx, s.rx / 1400, s.tx, s.tx / 1400, veths }) catch error.Unreadable;
         }
@@ -347,7 +310,6 @@ pub const FakeSource = struct {
         out[0].label.set("cpu");
         out[1] = .{ .celsius = 36.5 };
         out[1].label.set("nvme");
-        // Busy share wanders between ~15% and ~75% so the graph moves.
         const pct = 15 + (s.tick * 13) % 60;
         s.busy += pct;
         s.idle += 100 - pct;
@@ -357,8 +319,6 @@ pub const FakeSource = struct {
         return 2;
     }
 };
-
-// ---------------------------------------------------------------- tests
 
 test "fake source never panics or goes backwards over a long run" {
     var c: Collector(FakeSource) = .{ .source = .{} };
@@ -430,13 +390,12 @@ test "two samples produce cpu percent and network rates" {
     try std.testing.expectEqual(@as(u64, 600), first.mounts[0].usage.?.total_bytes - first.mounts[0].usage.?.free_bytes);
     try std.testing.expectEqual(@as(u8, 1), first.temp_count);
 
-    // 2 seconds later: 100 more busy jiffies, 100 more idle -> 50%
     c.source.stat = "cpu  150 0 150 900 0 0 0 0\ncpu0 150 0 150 900 0 0 0 0\n";
     c.source.net = "h\nh\n  eth0: 5000 50 0 0 0 0 0 0 2400 30 0 0 0 0 0 0\n";
     const second = try c.sample(12_000, 1_700_000_002);
     try std.testing.expectApproxEqAbs(@as(f32, 50.0), second.cpu_pct, 0.01);
     try std.testing.expectApproxEqAbs(@as(f32, 50.0), second.core_pct[0], 0.01);
-    try std.testing.expectEqual(@as(u64, 2000), second.ifaces[0].rx_bps); // 4000 bytes / 2 s
+    try std.testing.expectEqual(@as(u64, 2000), second.ifaces[0].rx_bps);
     try std.testing.expectEqual(@as(u64, 200), second.ifaces[0].tx_bps);
     try std.testing.expectEqual(@as(u64, 1000), second.mem.usedKb());
     try std.testing.expectApproxEqAbs(@as(f64, 100.5), second.uptime_s, 0.001);

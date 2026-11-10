@@ -2,8 +2,6 @@ import { get, post } from "./api.js";
 import { StripChart } from "./chart.js";
 import { bytes, bytesText, duration, level, percent, rate, rateText } from "./format.js";
 
-// Tiny DOM builder. Strings become text nodes, never HTML, so nothing from the
-// server can inject markup.
 export function h(tag, attrs, ...kids) {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs || {})) {
@@ -22,8 +20,6 @@ function setValue(el, value, unit) {
   el.textContent = value;
   if (unit) el.append(h("small", {}, unit));
 }
-
-// ---------------------------------------------------------------- overview
 
 function channel(name, chartOpts) {
   const value = h("div", { class: "channel-value" });
@@ -86,7 +82,6 @@ export function overviewView() {
       tx.sub.textContent = `${bytesText(net.txBytes)} sent since boot`;
       tx.chart.setData([hist.tx]);
 
-      // Cores: rebuild only when the count changes, otherwise patch in place.
       const cores = snap.cpu.cores;
       coresBlock.hidden = cores.length === 0;
       if (coresBox.children.length !== cores.length) {
@@ -115,8 +110,6 @@ export function overviewView() {
     },
   };
 }
-
-// ---------------------------------------------------------------- storage
 
 export function storageView() {
   const body = h("tbody");
@@ -153,8 +146,6 @@ export function storageView() {
   };
 }
 
-// ---------------------------------------------------------------- network
-
 export function networkView() {
   const body = h("tbody");
   const el = h(
@@ -188,15 +179,11 @@ export function networkView() {
   };
 }
 
-// ---------------------------------------------------------------- docker
-
 const DOCKER_HINTS = {
   "docker is not reachable": "NodOS cannot reach Docker. Check that the socket exists and that the user running NodOS can read it.",
   "docker integration is turned off": "Docker is turned off in the NodOS config (docker_socket = off).",
 };
 
-// Log viewer shared by Docker and Services. `fetchLines` returns
-// {lines, truncated}; `explain` turns an error into words for the admin.
 function logPanel(explain) {
   const title = h("h2", {});
   const pre = h("pre", { class: "logs", tabindex: "0" });
@@ -236,7 +223,7 @@ function logPanel(explain) {
 function stateLevel(state) {
   if (state === "running") return "ok";
   if (state === "exited" || state === "created") return "idle";
-  return "warn"; // restarting, paused, dead, removing
+  return "warn";
 }
 
 export function dockerView({ role }) {
@@ -291,7 +278,6 @@ export function dockerView({ role }) {
     const running = c.state === "running";
     const actions = h("td", { class: "num actions" });
     if (admin) {
-      // append(null) would print the word "null", so only pass real nodes.
       actions.append(
         ...[
           button("Logs", () => openLogs(c)),
@@ -337,12 +323,9 @@ export function dockerView({ role }) {
       alive = false;
       clearInterval(timer);
     },
-    // The container list is polled, not streamed.
     update() {},
   };
 }
-
-// ---------------------------------------------------------------- services
 
 const SERVICE_HINTS = {
   "no services are configured": "No services are listed yet. Add a services line to the NodOS config, for example: services = ssh, nginx",
@@ -353,7 +336,7 @@ function activeLevel(active) {
   if (active === "active") return "ok";
   if (active === "failed") return "crit";
   if (active === "inactive") return "idle";
-  return "warn"; // activating, deactivating, reloading
+  return "warn";
 }
 
 export function serviceView({ role }) {
@@ -450,8 +433,6 @@ export function serviceView({ role }) {
     update() {},
   };
 }
-
-// ---------------------------------------------------------------- audit
 
 export function auditView({ role }) {
   const body = h("tbody");

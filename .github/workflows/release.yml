@@ -1,12 +1,5 @@
 name: Release
 
-# Push a tag like v0.1.0 to publish a GitHub release. The tag must match
-# build.zig.zon, the first step checks that so we never ship a binary that
-# reports the wrong version.
-#
-# To test the whole pipeline without publishing anything, run this workflow by
-# hand (Actions tab, "Run workflow"). A manual run builds everything, uploads
-# the tarballs as a workflow artifact and stops before the release step.
 on:
   push:
     tags: ["v*"]
@@ -58,10 +51,6 @@ jobs:
           (cd dist && sha256sum ./*.tar.gz > SHA256SUMS && cat SHA256SUMS)
 
       - name: Sign the checksums
-        # `nodos update` refuses any release without a valid signature, so an
-        # unsigned release is a release nobody's updater will accept. A tag
-        # build therefore fails here rather than publish one. A manual dry run
-        # without the secret just carries on and says so.
         env:
           NODOS_SIGNING_KEY: ${{ secrets.NODOS_SIGNING_KEY }}
         run: |
@@ -77,8 +66,6 @@ jobs:
           zig build sign-tool --prefix .zig-cache/sign
           TOOL=.zig-cache/sign/bin/release-sign
           "$TOOL" sign dist/SHA256SUMS > dist/SHA256SUMS.sig
-          # The public half is compiled into every nodos. If the secret in
-          # GitHub does not match it, no installed nodos could accept this release.
           "$TOOL" verify dist/SHA256SUMS dist/SHA256SUMS.sig src/update/signing.pub
           ls -l dist
 

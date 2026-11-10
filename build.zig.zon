@@ -1,10 +1,8 @@
 .{
     .name = .nodos,
-    .fingerprint = 0xe7d2ed7646809f24, // never change this
+    .fingerprint = 0xe7d2ed7646809f24, // don't change, zig would treat it as a different package
     .version = "0.0.1-dev",
     .minimum_zig_version = "0.17.0",
-    // Zero dependencies on purpose. Adding one needs a written justification
-    // in docs/architecture/decisions.md.
     .dependencies = .{},
     .paths = .{
         "build.zig",

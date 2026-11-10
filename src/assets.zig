@@ -1,5 +1,3 @@
-//! The dashboard, compiled into the binary. One file to deploy, nothing to
-//! forget to copy, and the web files can't drift from the server version.
 const std = @import("std");
 
 pub const Asset = struct {
@@ -36,8 +34,6 @@ test "index and scripts are embedded" {
 }
 
 test "every module the app imports is served" {
-    // Catches the classic mistake of adding a JS file and forgetting to
-    // register it here, which only shows up as a blank page in a browser.
     for (all) |a| {
         if (!std.mem.endsWith(u8, a.path, ".js")) continue;
         var it = std.mem.splitSequence(u8, a.body, "from \"./");

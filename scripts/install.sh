@@ -1,9 +1,4 @@
 #!/usr/bin/env bash
-# Installs NodOS on a Linux box with systemd. Read it before you run it; it is
-# short on purpose. It does not start the service and it never overwrites an
-# existing config.
-#
-# Usage: sudo scripts/install.sh [path-to-nodos-binary]
 set -euo pipefail
 
 BIN="${1:-zig-out/bin/nodos}"
@@ -22,7 +17,6 @@ if ! command -v systemctl >/dev/null 2>&1; then
     exit 1
 fi
 
-# A dedicated unprivileged account. No login shell, no home beyond the data dir.
 if ! id nodos >/dev/null 2>&1; then
     useradd --system --user-group --home-dir /var/lib/nodos --no-create-home --shell /usr/sbin/nologin nodos
 fi
@@ -31,7 +25,6 @@ install -d -o nodos -g nodos -m 0750 /var/lib/nodos
 install -d -o root -g nodos -m 0750 /etc/nodos
 install -m 0755 "$BIN" /usr/local/bin/nodos
 
-# Keep an admin's edits across upgrades.
 if [ ! -e /etc/nodos/nodos.conf ]; then
     install -m 0640 -o root -g nodos "$HERE/packaging/nodos.conf.example" /etc/nodos/nodos.conf
     echo "wrote /etc/nodos/nodos.conf"
@@ -40,8 +33,6 @@ else
 fi
 
 install -m 0644 "$HERE/packaging/nodos.service" /etc/systemd/system/nodos.service
-# The auto-update units are installed but NOT enabled. Turning them on is a
-# separate, deliberate step: sudo nodos update --auto on
 install -m 0644 "$HERE/packaging/nodos-update.service" /etc/systemd/system/nodos-update.service
 install -m 0644 "$HERE/packaging/nodos-update.timer" /etc/systemd/system/nodos-update.timer
 systemctl daemon-reload

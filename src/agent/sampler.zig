@@ -1,13 +1,9 @@
-//! Samples the host on a timer and keeps the latest Snapshot plus a short ring
-//! of history points for the dashboard graphs. History lives in memory only
-//! and is lost on restart; that is intentional for early releases.
 const std = @import("std");
 const Io = std.Io;
 const collect = @import("collect.zig");
 const build_options = @import("build_options");
 const Snapshot = collect.Snapshot;
 
-/// 300 points at the default 2 s interval is ten minutes of graph.
 pub const history_len = 300;
 
 pub const Point = struct {
@@ -22,7 +18,6 @@ pub fn pointFrom(s: *const Snapshot) Point {
     var rx: u64 = 0;
     var tx: u64 = 0;
     for (s.ifaces[0..s.iface_count]) |i| {
-        // Loopback traffic is the box talking to itself, not network load.
         if (std.mem.eql(u8, i.name.slice(), "lo")) continue;
         rx += i.rx_bps;
         tx += i.tx_bps;
@@ -36,10 +31,8 @@ pub const Sampler = struct {
     latest: Snapshot = .{},
     have_latest: bool = false,
     ring: [history_len]Point = undefined,
-    /// Index the next point will be written to.
     head: usize = 0,
     count: usize = 0,
-    /// Set when the first sample fails with Unsupported (non-Linux host).
     unsupported: bool = false,
 
     pub fn ingest(s: *Sampler, io: Io, snap: Snapshot) void {
@@ -48,22 +41,19 @@ pub const Sampler = struct {
         const first = !s.have_latest;
         s.latest = snap;
         s.have_latest = true;
-        // The very first sample has no previous counters, so cpu and network
-        // rates are all zero. Plotting it would draw a fake dip to zero.
+        // first sample has no previous counters so every rate is 0, don't plot it
         if (first) return;
         s.ring[s.head] = pointFrom(&snap);
         s.head = (s.head + 1) % history_len;
         if (s.count < history_len) s.count += 1;
     }
 
-    /// Copy out under the lock; Snapshot is a plain value.
     pub fn latestCopy(s: *Sampler, io: Io) ?Snapshot {
         s.mutex.lockUncancelable(io);
         defer s.mutex.unlock(io);
         return if (s.have_latest) s.latest else null;
     }
 
-    /// Writes points oldest first into `out`, returns how many.
     pub fn historyCopy(s: *Sampler, io: Io, out: *[history_len]Point) usize {
         s.mutex.lockUncancelable(io);
         defer s.mutex.unlock(io);
@@ -72,14 +62,11 @@ pub const Sampler = struct {
         return s.count;
     }
 
-    /// Called after every successful sample, on the sampler's own task. Keep
-    /// it quick: it delays the next tick.
     pub const Hook = struct {
         ctx: *anyopaque,
         call: *const fn (ctx: *anyopaque, io: Io, snap: *const Snapshot) void,
     };
 
-    /// Runs until cancelled. Returns early on a platform we can't read.
     pub fn run(s: *Sampler, io: Io, interval_ms: u32, hook: ?Hook) Io.Cancelable!void {
         const Source = if (build_options.fake_host) collect.FakeSource else collect.LinuxSource;
         var c: collect.Collector(Source) = .{ .source = if (build_options.fake_host) .{} else .{ .io = io } };
@@ -103,8 +90,6 @@ pub const Sampler = struct {
                     return;
                 },
                 else => {
-                    // Log the transition, not every tick: a broken /proc would
-                    // otherwise write a line every two seconds forever.
                     if (!failing) log.warn("sample failed: {s}", .{@errorName(err)});
                     failing = true;
                 },
@@ -123,7 +108,6 @@ pub const Sampler = struct {
 test "ring keeps the newest points in order" {
     const io = std.testing.io;
     var s: Sampler = .{};
-    // Prime past the "first sample" filter with a non-zero cpu reading.
     var i: usize = 0;
     while (i < history_len + 50) : (i += 1) {
         var snap: Snapshot = .{ .ts_s = @intCast(i), .cpu_pct = 10 };

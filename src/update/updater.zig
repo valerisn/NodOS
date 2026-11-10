@@ -1,23 +1,3 @@
-//! `nodos update`: replace the installed binary with the latest signed release.
-//!
-//! The order of operations is the whole safety story, so it is spelled out:
-//!
-//!   1. ask the release server what "latest" is, and decide whether to go on
-//!   2. download the tarball, SHA256SUMS and its signature
-//!   3. verify the signature, then the checksum  (nothing runs before this)
-//!   4. extract the binary in memory and write it NEXT TO the installed one
-//!   5. run it once with `version` and insist it names the version we expect
-//!   6. copy the installed binary to nodos.previous
-//!   7. atomically rename the new binary over the installed one
-//!   8. restart the service and wait for it to report the new version
-//!   9. if step 8 does not come back healthy, put nodos.previous back, restart,
-//!      remember the bad version, and say so
-//!
-//! Failing at 1 to 5 changes nothing on disk that matters. Failing at 6 or 7
-//! leaves the old binary in place. Failing at 8 rolls back by itself.
-//!
-//! This runs as root (it has to write /usr/local/bin and restart a service),
-//! started by a person or by the opt-in timer. The web server never runs it.
 const std = @import("std");
 const builtin = @import("builtin");
 const Io = std.Io;
@@ -37,23 +17,15 @@ pub const Mode = enum { apply, check, rollback, auto_run, auto_on, auto_off, aut
 
 pub const Options = struct {
     mode: Mode = .apply,
-    /// Skip the "are you sure" on risky operations.
     yes: bool = false,
-    /// Install even a version that failed before.
     force: bool = false,
-    /// Release mirror instead of GitHub (also read from the config).
     mirror: ?[]const u8 = null,
-    /// Override the public key compiled into this binary. For private mirrors
-    /// that sign with their own key, and for tests.
     pubkey: ?[]const u8 = null,
-    /// Installed binary to replace. Default: /usr/local/bin/nodos.
     binary: ?[]const u8 = null,
     config_path: ?[]const u8 = null,
-    /// Unattended updates wait this many days after a release is published.
     soak_days: u32 = 3,
 };
 
-/// Process exit codes. 10 lets scripts ask "is an update waiting?" cheaply.
 pub const exit_ok: u8 = 0;
 pub const exit_failed: u8 = 1;
 pub const exit_usage: u8 = 2;
@@ -81,7 +53,6 @@ const Ctx = struct {
         c.out.flush() catch {};
     }
 
-    /// Prints the reason on stderr and returns the failure marker.
     fn fail(c: *Ctx, comptime fmt: []const u8, args: anytype) Failure {
         _ = c;
         std.debug.print("nodos update: " ++ fmt ++ "\n", args);
@@ -89,10 +60,6 @@ const Ctx = struct {
     }
 };
 
-// ---------------------------------------------------------------- state file
-
-/// `bad=<tag>` lines remember versions that failed to come up healthy, so the
-/// timer never installs them again.
 pub fn stateHasBad(text: []const u8, tag: []const u8) bool {
     var lines = std.mem.splitScalar(u8, text, '\n');
     while (lines.next()) |raw| {
@@ -108,7 +75,6 @@ pub fn stateWithBad(arena: std.mem.Allocator, text: []const u8, tag: []const u8)
     return std.fmt.allocPrint(arena, "{s}{s}bad={s}\n", .{ text, sep, tag });
 }
 
-/// "nodos 1.2.3\n" to "1.2.3".
 pub fn parseVersionOutput(text: []const u8) ?[]const u8 {
     const t = std.mem.trim(u8, text, " \t\r\n");
     if (!std.mem.startsWith(u8, t, "nodos ")) return null;
@@ -116,24 +82,18 @@ pub fn parseVersionOutput(text: []const u8) ?[]const u8 {
     return if (v.len == 0) null else v;
 }
 
-/// The "version" field of /api/v1/health.
 pub fn healthVersion(arena: std.mem.Allocator, body: []const u8) ?[]const u8 {
     const H = struct { version: []const u8 = "" };
     const h = std.json.parseFromSliceLeaky(H, arena, body, .{ .ignore_unknown_fields = true }) catch return null;
     return if (h.version.len == 0) null else h.version;
 }
 
-/// 0.0.0.0 and :: mean "everywhere", so loopback reaches them. Anything else
-/// is the address the server is bound to.
 pub fn healthUrl(arena: std.mem.Allocator, listen: []const u8, port: u16) ![]const u8 {
     const host = if (std.mem.eql(u8, listen, "0.0.0.0")) "127.0.0.1" else if (std.mem.eql(u8, listen, "::")) "[::1]" else listen;
     const bracket = std.mem.findScalar(u8, host, ':') != null and host[0] != '[';
     return std.fmt.allocPrint(arena, "http://{s}{s}{s}:{d}/api/v1/health", .{ if (bracket) "[" else "", host, if (bracket) "]" else "", port });
 }
 
-// ---------------------------------------------------------------- entry point
-
-/// Runs the command and returns the process exit code.
 pub fn run(io: Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, out: *Io.Writer, opts: Options) u8 {
     var ctx: Ctx = .{ .io = io, .gpa = gpa, .arena = arena, .out = out, .opts = opts };
     return dispatch(&ctx) catch |err| switch (err) {
@@ -170,18 +130,12 @@ fn loadConfig(ctx: *Ctx) config.Config {
     return config.parse(ctx.arena, text, &diag) catch .{};
 }
 
-// ---------------------------------------------------------------- latest release
-
 const Latest = struct {
     rel: release.Release,
     current: Version,
-    /// What the installed binary calls itself, e.g. "0.1.0".
     current_text: []const u8,
 };
 
-/// The version of the binary that is actually installed, found by asking it.
-/// Usually that is this very process, but `--binary` can point anywhere, and
-/// "up to date" has to mean the thing that will be replaced.
 fn installedVersion(ctx: *Ctx) []const u8 {
     const path = ctx.opts.binary orelse blk: {
         _ = Io.Dir.cwd().statFile(ctx.io, default_binary, .{}) catch break :blk null;
@@ -190,7 +144,6 @@ fn installedVersion(ctx: *Ctx) []const u8 {
     return binaryVersion(ctx, path) orelse build_options.version;
 }
 
-/// What a binary says it is, by running `version` on it. Null if it won't run.
 fn binaryVersion(ctx: *Ctx, path: []const u8) ?[]const u8 {
     const r = std.process.run(ctx.gpa, ctx.io, .{
         .argv = &.{ path, "version" },
@@ -230,11 +183,8 @@ fn cmdCheck(ctx: *Ctx) Failure!u8 {
     return exit_update_available;
 }
 
-// ---------------------------------------------------------------- apply
-
 const Target = struct {
     dir: Io.Dir,
-    /// Absolute path of the installed binary, for messages.
     path: []const u8,
     name: []const u8,
 };
@@ -278,14 +228,11 @@ fn cmdApply(ctx: *Ctx, auto: bool) Failure!u8 {
         return exit_ok;
     }
 
-    // Kept next to the data so the unprivileged server and the root updater agree on it.
     const state_path = try std.fmt.allocPrint(ctx.arena, "{s}/{s}", .{ ctx.cfg.data_dir, state_file });
     const state = Io.Dir.cwd().readFileAlloc(ctx.io, state_path, ctx.arena, .limited(16 * 1024)) catch "";
     const known_bad = stateHasBad(state, tag);
 
     if (auto) {
-        // Unattended: every extra rule here is a reason a bad release is less
-        // likely to reach someone who is not watching.
         if (!version_mod.autoAllowed(l.current, l.rel.version)) {
             ctx.say("auto-update: {s} is not a patch release of {d}.{d}.x, so it waits for a manual `sudo nodos update`.", .{ tag, l.current.major, l.current.minor });
             return exit_ok;
@@ -313,13 +260,12 @@ fn cmdApply(ctx: *Ctx, auto: bool) Failure!u8 {
 
     ctx.say("Updating nodos {s} to {s}", .{ l.current_text, tag[1..] });
 
-    // 2. download
     const sums = fetchAsset(ctx, tag, "SHA256SUMS", 64 * 1024, 30_000) catch |e| return e;
     const sig = fetchAsset(ctx, tag, "SHA256SUMS.sig", 4 * 1024, 30_000) catch |e| return e;
     ctx.say("Downloading {s}...", .{tgz_name});
     const tgz = fetchAsset(ctx, tag, tgz_name, 64 * 1024 * 1024, 300_000) catch |e| return e;
 
-    // 3. verify. Nothing downloaded is trusted, let alone run, before this.
+    // nothing downloaded gets unpacked or run before this passes
     verify.verifyDownload(sums, sig, pubkeyText(ctx), tgz_name, tgz) catch |err| switch (err) {
         error.NoSigningKey => return ctx.fail(
             "this build of nodos has no release signing key compiled in, so it cannot check that a download is genuine and will not install one. " ++
@@ -336,34 +282,30 @@ fn cmdApply(ctx: *Ctx, auto: bool) Failure!u8 {
     };
     ctx.say("Signature and checksum verified.", .{});
 
-    // 4. extract
     const bin = extract.binaryFromTarGz(ctx.arena, tgz) catch |err| return ctx.fail("could not read the release archive ({s})", .{@errorName(err)});
 
     var target = try openTarget(ctx);
     defer target.dir.close(ctx.io);
 
-    // 4b. write beside the installed binary, 5. prove it runs and is the right version
     const new_name = try std.fmt.allocPrint(ctx.arena, "{s}.new", .{target.name});
     try writeExecutable(ctx, target.dir, new_name, bin);
     errdefer target.dir.deleteFile(ctx.io, new_name) catch {};
     const new_path = try siblingPath(ctx, target.path, new_name);
     try sanityRun(ctx, new_path, tag[1..]);
 
-    // 6. keep the old one
     const prev_name = try std.fmt.allocPrint(ctx.arena, "{s}.previous", .{target.name});
     target.dir.copyFile(target.name, target.dir, prev_name, ctx.io, .{}) catch |err| {
         target.dir.deleteFile(ctx.io, new_name) catch {};
         return ctx.fail("could not back up the current binary ({s}). Nothing was changed.", .{@errorName(err)});
     };
 
-    // 7. swap, atomically
+    // rename is atomic, the installed name is never missing
     target.dir.rename(new_name, target.dir, target.name, ctx.io) catch |err| {
         target.dir.deleteFile(ctx.io, new_name) catch {};
         return ctx.fail("could not install the new binary ({s}). The old one is still in place.", .{@errorName(err)});
     };
     ctx.say("Installed nodos {s} at {s} (previous version kept as {s}).", .{ tag[1..], target.path, prev_name });
 
-    // 8. restart and watch
     if (!serviceActive(ctx)) {
         ctx.say("The nodos service is not running, so there is nothing to restart. Start it with: sudo systemctl start nodos", .{});
         writeAudit(ctx, "update.applied", l.current_text, tag, true);
@@ -407,9 +349,6 @@ fn writeExecutable(ctx: *Ctx, dir: Io.Dir, name: []const u8, bytes: []const u8) 
     f.writeStreamingAll(ctx.io, bytes) catch |err| return ctx.fail("cannot write {s} ({s})", .{ name, @errorName(err) });
 }
 
-/// Run the candidate once. It must answer `version` with exactly the version
-/// the signed release claims; that catches a wrong-architecture build, a
-/// corrupted file that somehow passed, and a mislabelled release.
 fn sanityRun(ctx: *Ctx, path: []const u8, want: []const u8) Failure!void {
     const r = std.process.run(ctx.gpa, ctx.io, .{
         .argv = &.{ path, "version" },
@@ -425,15 +364,13 @@ fn sanityRun(ctx: *Ctx, path: []const u8, want: []const u8) Failure!void {
         return ctx.fail("the downloaded binary says it is {s}, but the release is {s}. Nothing was changed.", .{ got, want });
 }
 
-// ---------------------------------------------------------------- service control
-
 fn execCode(ctx: *Ctx, argv: []const []const u8, timeout_s: i64) ?u8 {
     const r = std.process.run(ctx.gpa, ctx.io, .{
         .argv = argv,
         .stdout_limit = .limited(64 * 1024),
         .stderr_limit = .limited(64 * 1024),
         .timeout = .{ .duration = .{ .raw = .fromSeconds(timeout_s), .clock = .awake } },
-    }) catch return null; // not installed, or timed out
+    }) catch return null;
     defer ctx.gpa.free(r.stdout);
     defer ctx.gpa.free(r.stderr);
     return switch (r.term) {
@@ -494,7 +431,6 @@ fn rememberBad(ctx: *Ctx, tag: []const u8) void {
         std.debug.print("nodos update: could not record the failed version ({s})\n", .{@errorName(err)});
 }
 
-/// Best effort: append to the audit log if the server has already created it.
 fn writeAudit(ctx: *Ctx, action: []const u8, from: []const u8, tag: []const u8, ok: bool) void {
     const path = std.fmt.allocPrint(ctx.arena, "{s}/{s}", .{ ctx.cfg.data_dir, "audit.log" }) catch return;
     var f = Io.Dir.cwd().openFile(ctx.io, path, .{ .mode = .write_only }) catch return;
@@ -508,8 +444,6 @@ fn writeAudit(ctx: *Ctx, action: []const u8, from: []const u8, tag: []const u8, 
     f.writePositionalAll(ctx.io, w.buffered(), end) catch {};
 }
 
-// ---------------------------------------------------------------- rollback
-
 fn cmdRollback(ctx: *Ctx) Failure!u8 {
     try requireRoot(ctx);
     var target = try openTarget(ctx);
@@ -520,7 +454,6 @@ fn cmdRollback(ctx: *Ctx) Failure!u8 {
     _ = target.dir.statFile(ctx.io, prev_name, .{}) catch
         return ctx.fail("there is no previous version to go back to ({s} does not exist)", .{prev_path});
 
-    // The previous binary has to be runnable and say what it is before we trust it.
     const r = std.process.run(ctx.gpa, ctx.io, .{
         .argv = &.{ prev_path, "version" },
         .stdout_limit = .limited(4096),
@@ -530,11 +463,8 @@ fn cmdRollback(ctx: *Ctx) Failure!u8 {
     defer ctx.gpa.free(r.stdout);
     defer ctx.gpa.free(r.stderr);
     const prev_version = parseVersionOutput(r.stdout) orelse return ctx.fail("the previous binary did not report a version; not touching anything", .{});
-    // Ask the installed binary what it is rather than assuming it is us.
     const replaced_version = binaryVersion(ctx, target.path) orelse build_options.version;
 
-    // Swap, so that rolling back twice returns to where you started. Both
-    // copies are atomic; the installed name is never missing.
     const holding = try std.fmt.allocPrint(ctx.arena, "{s}.swap", .{target.name});
     target.dir.copyFile(target.name, target.dir, holding, ctx.io, .{}) catch |err|
         return ctx.fail("could not stage the swap ({s})", .{@errorName(err)});
@@ -543,7 +473,6 @@ fn cmdRollback(ctx: *Ctx) Failure!u8 {
     target.dir.rename(holding, target.dir, prev_name, ctx.io) catch |err|
         std.debug.print("nodos update: restored, but could not keep the replaced binary ({s})\n", .{@errorName(err)});
 
-    // Don't let the timer immediately reinstall what the admin just undid.
     var tag_buf: [64]u8 = undefined;
     if (std.fmt.bufPrint(&tag_buf, "v{s}", .{replaced_version})) |t| rememberBad(ctx, t) else |_| {}
 
@@ -558,8 +487,6 @@ fn cmdRollback(ctx: *Ctx) Failure!u8 {
     writeAudit(ctx, "update.rollback", replaced_version, prev_version, true);
     return exit_ok;
 }
-
-// ---------------------------------------------------------------- auto-update toggle
 
 const auto_warning =
     \\Automatic updates are PROBABLY NOT WHAT YOU WANT.
@@ -615,8 +542,6 @@ fn cmdAuto(ctx: *Ctx) Failure!u8 {
     }
 }
 
-// ---------------------------------------------------------------- tests
-
 test "bad-version state file" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
@@ -629,7 +554,6 @@ test "bad-version state file" {
     try std.testing.expect(!stateHasBad(one, "v1.0"));
     const two = try stateWithBad(a, "bad=v1.0.0", "v1.0.1");
     try std.testing.expectEqualStrings("bad=v1.0.0\nbad=v1.0.1\n", two);
-    // recording twice doesn't duplicate
     try std.testing.expectEqualStrings(two, try stateWithBad(a, two, "v1.0.1"));
     try std.testing.expect(stateHasBad("junk\r\nbad=v2.0.0\r\n", "v2.0.0"));
 }
@@ -665,6 +589,5 @@ test "the auto-update warning says what matters" {
     try std.testing.expect(std.mem.find(u8, auto_warning, "PROBABLY NOT WHAT YOU WANT") != null);
     try std.testing.expect(std.mem.find(u8, auto_warning, "patch releases") != null);
     try std.testing.expect(std.mem.find(u8, auto_warning, "rolled back") != null);
-    // it must not read like a em dash laden sales pitch
     try std.testing.expect(std.mem.find(u8, auto_warning, "\xe2\x80\x94") == null);
 }

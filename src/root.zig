@@ -1,5 +1,3 @@
-//! NodOS library root. Everything the binary uses is re-exported from here
-//! so the executable stays a thin CLI shell and the logic stays testable.
 const std = @import("std");
 
 pub const version: []const u8 = @import("build_options").version;
@@ -36,8 +34,6 @@ pub const agent = struct {
 
 test {
     std.testing.refAllDecls(@This());
-    // refAllDecls stops at the first level, and a silent zero-test module is
-    // exactly how parsers rot.
     std.testing.refAllDecls(agent);
     std.testing.refAllDecls(integrations);
     std.testing.refAllDecls(update);

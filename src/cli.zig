@@ -1,5 +1,3 @@
-//! Argument parsing. Deliberately tiny: a handful of commands do not justify
-//! a parsing library, and we are not adding a dependency for it.
 const std = @import("std");
 const auth = @import("auth.zig");
 const updater = @import("update/updater.zig");
@@ -18,11 +16,8 @@ pub const Command = enum {
 pub const Parsed = struct {
     command: Command,
     config_path: ?[]const u8 = null,
-    /// user add, passwd, remove
     user_name: ?[]const u8 = null,
-    /// user add only
     role: auth.Role = .admin,
-    /// update only
     update: updater.Options = .{},
 };
 
@@ -49,8 +44,6 @@ const user_sub = [_]struct { name: []const u8, cmd: Command, takes_name: bool }{
     .{ .name = "list", .cmd = .user_list, .takes_name = false },
 };
 
-/// `args` is argv without the program name. No args means help, because a
-/// server tool that silently does something on bare invocation is a footgun.
 pub fn parse(args: []const []const u8) ParseError!Parsed {
     if (args.len == 0) return .{ .command = .help };
 
@@ -99,7 +92,6 @@ pub fn parse(args: []const []const u8) ParseError!Parsed {
     return out;
 }
 
-/// `nodos update` has more switches than anything else, so it gets its own loop.
 fn parseUpdateFlags(rest: []const []const u8) ParseError!updater.Options {
     var o: updater.Options = .{};
     var mode_set = false;
@@ -115,7 +107,6 @@ fn parseUpdateFlags(rest: []const []const u8) ParseError!updater.Options {
             mode_set = true;
             o.mode = .rollback;
         } else if (std.mem.eql(u8, a, "--auto-run")) {
-            // What the systemd timer runs. Not for people.
             if (mode_set) return error.ConflictingOptions;
             mode_set = true;
             o.mode = .auto_run;
@@ -200,9 +191,7 @@ test "user passwd, remove and list" {
     const ls = try parse(&.{ "user", "list", "--config", "c.conf" });
     try std.testing.expectEqual(Command.user_list, ls.command);
     try std.testing.expect(ls.user_name == null);
-    // --role only means something for add
     try std.testing.expectError(error.UnexpectedArgument, parse(&.{ "user", "passwd", "a", "--role", "admin" }));
-    // list takes no name
     try std.testing.expectError(error.UnexpectedArgument, parse(&.{ "user", "list", "alice" }));
     try std.testing.expectError(error.MissingValue, parse(&.{ "user", "remove" }));
 }

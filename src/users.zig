@@ -1,10 +1,3 @@
-//! User accounts, stored in `<data_dir>/users.db` as one line per user:
-//!
-//!     id:name:role:phc-hash
-//!
-//! PHC strings contain `$` and `=` but never `:`, which is why colon works as
-//! the separator. Users are created from the CLI (`nodos user add`) and read
-//! once at server start, so there is no locking here.
 const std = @import("std");
 const Io = std.Io;
 const auth = @import("auth.zig");
@@ -33,7 +26,6 @@ pub const Users = struct {
         return null;
     }
 
-    /// Strings are copied into `arena`; the caller owns the arena.
     pub fn add(u: *Users, arena: std.mem.Allocator, name: []const u8, role: auth.Role, phc: []const u8) Error!*const User {
         if (!validName(name)) return error.InvalidName;
         if (u.find(name) != null) return error.DuplicateName;
@@ -50,7 +42,6 @@ pub const Users = struct {
 
     pub const ChangeError = error{ NoSuchUser, LastAdmin, OutOfMemory };
 
-    /// Replaces a user's password hash.
     pub fn setHash(u: *Users, arena: std.mem.Allocator, name: []const u8, phc: []const u8) ChangeError!void {
         for (u.list.items) |*user| {
             if (std.mem.eql(u8, user.name, name)) {
@@ -69,8 +60,6 @@ pub const Users = struct {
         return n;
     }
 
-    /// Refuses to delete the only admin: that would leave nobody able to
-    /// manage the server short of editing files by hand.
     pub fn remove(u: *Users, name: []const u8) ChangeError!void {
         for (u.list.items, 0..) |user, i| {
             if (!std.mem.eql(u8, user.name, name)) continue;
@@ -88,8 +77,6 @@ pub const Users = struct {
     }
 };
 
-/// Lowercase letters, digits, dash, underscore, 1 to 32 chars. Boring on
-/// purpose: the name ends up in logs and a file format with delimiters.
 pub fn validName(name: []const u8) bool {
     if (name.len == 0 or name.len > 32) return false;
     for (name) |c| {
@@ -123,7 +110,6 @@ pub fn parse(arena: std.mem.Allocator, text: []const u8) Error!Users {
     return users;
 }
 
-/// 0600 where the OS has modes; the file holds password hashes.
 fn privateFile() Io.File.Permissions {
     if (@hasDecl(Io.File.Permissions, "fromMode")) return Io.File.Permissions.fromMode(0o600);
     return .default_file;
@@ -131,7 +117,6 @@ fn privateFile() Io.File.Permissions {
 
 pub const file_name = "users.db";
 
-/// Missing file means no users yet, not an error.
 pub fn load(io: Io, arena: std.mem.Allocator, dir: Io.Dir) !Users {
     const text = dir.readFileAlloc(io, file_name, arena, .limited(1024 * 1024)) catch |err| switch (err) {
         error.FileNotFound => return .{},
@@ -140,7 +125,6 @@ pub fn load(io: Io, arena: std.mem.Allocator, dir: Io.Dir) !Users {
     return parse(arena, text);
 }
 
-/// Write-then-rename so a crash can never leave half a user file.
 pub fn save(io: Io, dir: Io.Dir, users: *const Users) !void {
     var atomic = try dir.createFileAtomic(io, file_name, .{ .permissions = privateFile(), .replace = true });
     defer atomic.deinit(io);
@@ -201,7 +185,6 @@ test "change password, remove, and the last admin is protected" {
     try u.remove("bob");
     try std.testing.expect(u.find("bob") == null);
 
-    // with a second admin, the first can go
     _ = try u.add(a, "dave", .admin, "$argon2id$d");
     try u.remove("alice");
     try std.testing.expectEqual(@as(usize, 1), u.list.items.len);

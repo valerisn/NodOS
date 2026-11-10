@@ -1,15 +1,3 @@
-//! Release signing helper. Not part of the nodos binary on purpose: the
-//! program that holds a secret key should be small and separate from the one
-//! that runs on people's servers.
-//!
-//!   release-sign keygen                 new key pair, printed as two hex lines
-//!   release-sign public                 public key for the secret in $NODOS_SIGNING_KEY
-//!   release-sign sign FILE              signature of FILE, hex, using $NODOS_SIGNING_KEY
-//!   release-sign verify FILE SIG PUB    check SIG (a file) over FILE against PUB (a file),
-//!                                       the same check `nodos update` will make
-//!
-//! The secret is read from the environment, never from an argument, so it
-//! doesn't land in shell history or `ps`.
 const std = @import("std");
 const Io = std.Io;
 const Ed25519 = std.crypto.sign.Ed25519;
@@ -41,10 +29,6 @@ pub fn main(init: std.process.Init) !void {
         const sig = kp.sign(data, null) catch fail("signing failed");
         try w.print("{x}\n", .{&sig.toBytes()});
     } else if (std.mem.eql(u8, args[1], "verify")) {
-        // The release workflow runs this right after signing, using the public
-        // key that is compiled into nodos. If the secret in GitHub and the key
-        // in the source tree ever drift apart, we find out before publishing a
-        // release that no installed nodos would accept.
         if (args.len != 5) fail("usage: release-sign verify FILE SIGFILE PUBFILE");
         const data = Io.Dir.cwd().readFileAlloc(io, args[2], arena, .limited(16 * 1024 * 1024)) catch fail("cannot read FILE");
         const sig_hex = Io.Dir.cwd().readFileAlloc(io, args[3], arena, .limited(4096)) catch fail("cannot read SIGFILE");

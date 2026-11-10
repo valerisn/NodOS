@@ -1,12 +1,5 @@
 #!/usr/bin/env python3
-"""A pretend Docker daemon on a Unix socket, for the smoke test.
-
-Answers just enough of the Engine API for NodOS: list, logs, start/stop/restart.
-Every request line is appended to the file given as argv[2], so the test can
-assert exactly what NodOS sent and, just as important, what it never sent.
-
-Usage: fake_docker.py SOCKET_PATH REQUEST_LOG
-"""
+"""Pretend docker daemon on a unix socket, for the smoke test."""
 import json
 import os
 import socketserver
@@ -23,9 +16,7 @@ CONTAINERS = [
      "Names": ["/old-job"], "Image": "busybox", "State": "exited", "Status": "Exited (0) 3 days ago", "Created": 1700000001},
 ]
 
-
 class Handler(BaseHTTPRequestHandler):
-    # HTTP/1.0 on purpose: same as what NodOS sends, body ends at EOF.
     protocol_version = "HTTP/1.0"
 
     def log_message(self, *_):
@@ -61,13 +52,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(404)
         self.end_headers()
 
-
 class Server(socketserver.UnixStreamServer):
     def get_request(self):
         request, _ = super().get_request()
-        # BaseHTTPRequestHandler wants a (host, port) client address.
         return request, ("local", 0)
-
 
 if os.path.exists(SOCK):
     os.unlink(SOCK)

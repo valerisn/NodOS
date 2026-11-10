@@ -1,34 +1,20 @@
-//! Append-only audit log: one JSON object per line in `<data_dir>/audit.log`.
-//! Records who did what and whether it worked. Never records secrets.
 const std = @import("std");
 const Io = std.Io;
 
 pub const Event = struct {
-    /// Unix seconds.
     ts: i64,
-    /// Username, or "-" when nobody is authenticated (failed logins).
     actor: []const u8,
-    /// Dotted action name, e.g. "auth.login", "docker.restart".
     action: []const u8,
-    /// What it acted on; empty when not applicable.
     target: []const u8 = "",
     ok: bool,
-    /// Peer address as text.
     ip: []const u8 = "",
 };
 
-/// Pure formatting so the escaping can be tested without touching disk.
-/// std.json handles escaping, so a hostile username can't forge log lines.
 pub fn format(w: *Io.Writer, ev: Event) Io.Writer.Error!void {
     std.json.Stringify.value(ev, .{}, w) catch return error.WriteFailed;
     try w.writeByte('\n');
 }
 
-/// Newest-first JSON array of the log lines found in `tail`, at most `limit`,
-/// stopping early if `w` runs low on room. `from_start` says whether `tail`
-/// begins at the start of the file; if not, its first line is probably cut in
-/// half and is dropped. Lines are written verbatim: each one was produced by
-/// `format` above, so it is already valid, escaped JSON.
 pub fn writeEntries(w: *Io.Writer, tail: []const u8, from_start: bool, limit: usize) Io.Writer.Error!void {
     var body = tail;
     if (!from_start) {
@@ -40,7 +26,6 @@ pub fn writeEntries(w: *Io.Writer, tail: []const u8, from_start: bool, limit: us
     var count: usize = 0;
     var end = body.len;
     while (end > 0 and count < limit) {
-        // walk backwards one line at a time
         var stop = end;
         if (body[stop - 1] == '\n') stop -= 1;
         const start = if (std.mem.findScalarLast(u8, body[0..stop], '\n')) |p| p + 1 else 0;
@@ -67,8 +52,6 @@ pub const Log = struct {
         return .{ .file = f };
     }
 
-    /// Reads up to `buf.len` bytes from the end of the file. Returns the bytes
-    /// and whether they start at the beginning of the file.
     pub fn readTail(l: *Log, io: Io, buf: []u8) !struct { bytes: []const u8, from_start: bool } {
         l.mutex.lockUncancelable(io);
         defer l.mutex.unlock(io);
@@ -83,8 +66,6 @@ pub const Log = struct {
         l.file.close(io);
     }
 
-    /// A failed audit write is logged loudly but does not take the server
-    /// down. Revisit: for destructive actions we may want to fail closed.
     pub fn record(l: *Log, io: Io, ev: Event) void {
         var buf: [1024]u8 = undefined;
         var w: Io.Writer = .fixed(&buf);
@@ -162,7 +143,6 @@ test "format escapes hostile input" {
     var w: Io.Writer = .fixed(&buf);
     try format(&w, .{ .ts = 42, .actor = "evil\"\n{\"ok\":true}", .action = "auth.login", .ok = false, .ip = "10.0.0.1" });
     const line = w.buffered();
-    // exactly one newline, at the end
     try std.testing.expectEqual(line.len - 1, std.mem.findScalar(u8, line, '\n').?);
     try std.testing.expect(std.mem.find(u8, line, "\\n") != null);
     try std.testing.expect(std.mem.startsWith(u8, line, "{\"ts\":42,"));

@@ -1,11 +1,3 @@
-//! Hostile-input tests. Every parser that touches text from a client, a file
-//! or the OS gets random garbage and corrupted copies of valid input, and must
-//! never panic, overflow, read out of bounds or hang. Returning an error is
-//! fine; crashing is the bug. Debug builds turn overflow and bounds mistakes
-//! into panics, which is what makes this useful.
-//!
-//! Runs on every `zig build test` with a fixed seed so failures reproduce. For
-//! open-ended exploration run `zig build test --fuzz`.
 const std = @import("std");
 const Io = std.Io;
 
@@ -26,8 +18,6 @@ fn randomBytes(rng: std.Random, buf: []u8) []u8 {
     return buf[0..len];
 }
 
-/// Valid input with a few bytes flipped, dropped, duplicated or truncated.
-/// Real corruption looks like this far more than it looks like pure noise.
 fn mutate(rng: std.Random, src: []const u8, out: []u8) []u8 {
     const n = @min(src.len, out.len);
     @memcpy(out[0..n], src[0..n]);
@@ -37,17 +27,17 @@ fn mutate(rng: std.Random, src: []const u8, out: []u8) []u8 {
         if (len == 0) break;
         const at = rng.uintLessThan(usize, len);
         switch (rng.uintLessThan(u8, 5)) {
-            0 => out[at] = rng.int(u8), // flip a byte
-            1 => len = at, // truncate
-            2 => { // delete a byte
+            0 => out[at] = rng.int(u8),
+            1 => len = at,
+            2 => {
                 std.mem.copyForwards(u8, out[at .. len - 1], out[at + 1 .. len]);
                 len -= 1;
             },
-            3 => if (len < out.len) { // duplicate a byte
+            3 => if (len < out.len) {
                 std.mem.copyBackwards(u8, out[at + 1 .. len + 1], out[at..len]);
                 len += 1;
             },
-            else => out[at] = "\n:= \t\"{}[],\\\r\x00"[rng.uintLessThan(usize, 13)], // structural characters
+            else => out[at] = "\n:= \t\"{}[],\\\r\x00"[rng.uintLessThan(usize, 13)],
         }
     }
     return out[0..len];
@@ -58,8 +48,6 @@ fn prng(seed: u64) std.Random.DefaultPrng {
 }
 
 test "the fixtures are valid and the mutations really reach both outcomes" {
-    // Without this, a typo in a fixture would make every test above pass by
-    // rejecting everything, and prove nothing.
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     var diag: config.Diagnostic = .{};
@@ -80,7 +68,6 @@ test "the fixtures are valid and the mutations really reach both outcomes" {
         const input = mutate(rng, valid, &buf);
         if (config.parse(a2.allocator(), input, &diag)) |_| accepted += 1 else |_| rejected += 1;
     }
-    // some single-byte edits land in values that stay legal, many don't
     try std.testing.expect(accepted > 50);
     try std.testing.expect(rejected > 50);
 }
@@ -123,7 +110,6 @@ test "proc parsers survive garbage" {
     for (0..iterations) |i| {
         const noise = i % 3 == 0;
         if (proc.parseCpuStat(if (noise) randomBytes(rng, &buf) else mutate(rng, stat, &buf))) |s| {
-            // whatever it accepted must still be usable without trapping
             _ = proc.cpuPercent(s.all, s.all);
             _ = proc.cpuPercent(.{}, s.all);
         } else |_| {}
@@ -205,8 +191,6 @@ test "audit tail rendering survives garbage" {
 }
 
 test "login bodies of every shape are handled" {
-    // Goes through the real dispatch path: JSON that is malformed, truncated,
-    // nested, huge-keyed or the wrong type must produce a clean 4xx, never a crash.
     const io = std.testing.io;
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
@@ -218,7 +202,6 @@ test "login bodies of every shape are handled" {
     const valid = "{\"username\":\"alice\",\"password\":\"not the right one\"}";
     for (0..400) |i| {
         var s: server.Scratch = .{};
-        // each attempt from a different address so the throttle never gets in the way
         var ctx = server.testCtx(.POST, "/api/v1/login");
         ctx.client = @splat(0);
         std.mem.writeInt(u32, ctx.client[0..4], @intCast(i), .little);

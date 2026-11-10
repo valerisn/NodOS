@@ -1,8 +1,4 @@
 #!/usr/bin/env bash
-# End-to-end smoke test against the built binary. CI runs this on Linux; it is
-# also how graceful shutdown gets tested, since that path is Linux only.
-#
-# Usage: scripts/smoke.sh [path-to-nodos]   (run `zig build` first)
 set -euo pipefail
 
 BIN="${1:-zig-out/bin/nodos}"
@@ -20,7 +16,6 @@ trap cleanup EXIT
 fail() { echo "FAIL: $*" >&2; echo "--- server log:" >&2; cat "$DIR/server.log" >&2 || true; exit 1; }
 status() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
 
-# cygpath only exists under Git Bash, where a native .exe can't see /tmp.
 NATIVE_DIR="$(cygpath -m "$DIR" 2>/dev/null || echo "$DIR")"
 cat > "$DIR/nodos.conf" <<EOF
 port = $PORT
@@ -31,7 +26,6 @@ docker_socket = $NATIVE_DIR/docker.sock
 services = ssh
 EOF
 
-# A fake Docker daemon, so the Docker routes are tested end to end on Linux.
 FAKE_PID=""
 if [ -z "${SMOKE_SKIP_POSIX:-}" ]; then
     python3 "$(dirname "$0")/fake_docker.py" "$DIR/docker.sock" "$DIR/docker-requests.log" &
@@ -41,7 +35,6 @@ if [ -z "${SMOKE_SKIP_POSIX:-}" ]; then
 fi
 
 printf '%s\n' 'smoke test passphrase' | "$BIN" user add smoke --config "$DIR/nodos.conf" >/dev/null
-# SMOKE_SKIP_POSIX=1 lets a developer run the HTTP half of this on Windows.
 if [ -z "${SMOKE_SKIP_POSIX:-}" ]; then
     [ "$(stat -c %a "$DIR/data/users.db")" = "600" ] || fail "users.db is not mode 600"
 fi
@@ -59,7 +52,6 @@ URL="http://127.0.0.1:$PORT/api/v1"
 [ "$(status "$URL/me")" = "401" ] || fail "me without cookie should be 401"
 [ "$(status "$URL/nope")" = "404" ] || fail "unknown path should be 404"
 
-# Regression: a bodiless POST used to crash the whole process via a std assert.
 [ "$(status -X POST -H 'Content-Length:' "$URL/login")" = "411" ] || fail "bodiless POST should be 411"
 kill -0 "$SERVER_PID" || fail "server died after bodiless POST"
 
@@ -74,8 +66,6 @@ CSRF="$(echo "$LOGIN" | grep -o '"csrf":"[^"]*"' | cut -d'"' -f4)"
 [ "$(status -H "Cookie: nodos_session=$TOKEN" "$URL/me")" = "200" ] || fail "me with cookie"
 [ "$(status "$URL/system")" = "401" ] || fail "system without cookie should be 401"
 if [ -z "${SMOKE_SKIP_POSIX:-}" ]; then
-    # Linux only: real /proc data. Default interval is 2 s, so by 5 s there
-    # are at least two samples and one plotted history point.
     sleep 5
     SYS="$(curl -s -H "Cookie: nodos_session=$TOKEN" "$URL/system")"
     echo "$SYS" | grep -Eq '"hostname":"[^"]+"' || fail "system: no hostname: $SYS"
@@ -84,8 +74,6 @@ if [ -z "${SMOKE_SKIP_POSIX:-}" ]; then
     HIST="$(curl -s -H "Cookie: nodos_session=$TOKEN" "$URL/history")"
     echo "$HIST" | grep -Eq '"ts":\[[0-9]+' || fail "history empty after sampling: $HIST"
 
-    # Live stream: ~6 s at a 2 s interval should deliver at least two events.
-    # curl exits 28 on --max-time, which is the expected way this ends.
     curl -s -i -N --max-time 6 -H "Cookie: nodos_session=$TOKEN" "$URL/stream" > "$DIR/stream.out" || true
     EVENTS="$(grep -c '^event: snapshot' "$DIR/stream.out" || true)"
     if [ "$EVENTS" -lt 2 ]; then
@@ -105,15 +93,12 @@ if [ -z "${SMOKE_SKIP_POSIX:-}" ]; then
     echo "$LIST" | grep -q '"total":2' || fail "docker list total: $LIST"
     curl -s "${AUTH[@]}" "$URL/docker/containers/web/logs?tail=5" | grep -q 'listening on :8080' || fail "docker logs"
 
-    # state change needs csrf, and a verb outside the allowed three never reaches docker
     [ "$(status -X POST -d '' "${AUTH[@]}" "$URL/docker/containers/web/restart")" = "403" ] || fail "docker restart without csrf"
     [ "$(status -X POST -d '' "${AUTH[@]}" -H "x-csrf-token: $CSRF" "$URL/docker/containers/web/restart")" = "200" ] || fail "docker restart"
     [ "$(status -X POST -d '' "${AUTH[@]}" -H "x-csrf-token: $CSRF" "$URL/docker/containers/web/kill")" = "404" ] || fail "docker kill must be 404"
     [ "$(status -X POST -d '' "${AUTH[@]}" -H "x-csrf-token: $CSRF" "$URL/docker/containers/nope/restart")" = "404" ] || fail "docker unknown container"
     [ "$(status -X POST -d '' "${AUTH[@]}" -H "x-csrf-token: $CSRF" "$URL/docker/containers/-rf/restart")" = "400" ] || fail "docker bad ref"
 
-    # Services: status is read-only so it is safe to run for real where systemd
-    # exists. We never start, stop or restart anything real in CI.
     if command -v systemctl >/dev/null 2>&1; then
         SVC="$(curl -s "${AUTH[@]}" "$URL/services")"
         echo "$SVC" | grep -q '"unit":"ssh"' || fail "services list missing ssh: $SVC"
@@ -128,7 +113,6 @@ if [ -z "${SMOKE_SKIP_POSIX:-}" ]; then
     [ "$(status "$URL/audit")" = "401" ] || fail "audit without cookie should be 401"
 
     grep -q 'POST /containers/web/restart' "$DIR/docker-requests.log" || fail "restart never reached docker"
-    # the dangerous things must never have been sent
     if grep -Eq 'kill|DELETE|/rm|exec|-rf' "$DIR/docker-requests.log"; then fail "unexpected request reached docker: $(cat "$DIR/docker-requests.log")"; fi
     grep -q '"action":"docker.restart","target":"web","ok":true' "$DIR/data/audit.log" || fail "docker restart not audited"
 fi
@@ -145,11 +129,9 @@ if [ -n "${SMOKE_SKIP_POSIX:-}" ]; then
     exit 0
 fi
 
-# Connection flood: more idle sockets than the cap, never closed by the client.
 python3 "$(dirname "$0")/flood_check.py" "$PORT" || fail "idle connection flood was not recovered from"
 kill -0 "$SERVER_PID" || fail "server died during the connection flood"
 
-# Graceful shutdown: SIGTERM must end the process with exit 0, quickly.
 kill -TERM "$SERVER_PID"
 for _ in $(seq 1 50); do
     kill -0 "$SERVER_PID" 2>/dev/null || break

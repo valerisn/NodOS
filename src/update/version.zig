@@ -1,17 +1,13 @@
-//! Semantic versions and the rules for which updates may happen unattended.
 const std = @import("std");
 
 pub const Version = struct {
     major: u32,
     minor: u32,
     patch: u32,
-    /// Everything after the first '-', empty for a normal release.
     pre: []const u8 = "",
 
     pub const ParseError = error{InvalidVersion};
 
-    /// Accepts "1.2.3", "v1.2.3", "1.2.3-dev", "v1.2.3-rc.1". Build metadata
-    /// ("+abc") is dropped, as semver says it must not affect ordering.
     pub fn parse(text: []const u8) ParseError!Version {
         var s = text;
         if (s.len > 0 and s[0] == 'v') s = s[1..];
@@ -33,8 +29,6 @@ pub const Version = struct {
     fn num(part: ?[]const u8) ParseError!u32 {
         const p = part orelse return error.InvalidVersion;
         if (p.len == 0 or p.len > 9) return error.InvalidVersion;
-        // semver forbids leading zeros ("01"); accepting them would let two
-        // spellings of one version compare as different strings elsewhere.
         if (p.len > 1 and p[0] == '0') return error.InvalidVersion;
         return std.fmt.parseInt(u32, p, 10) catch error.InvalidVersion;
     }
@@ -48,7 +42,6 @@ pub const Version = struct {
             std.math.order(a.minor, b.minor).differ() orelse
             std.math.order(a.patch, b.patch).differ();
         if (core) |c| return c;
-        // Same x.y.z: a release outranks any prerelease of it.
         if (a.pre.len == 0 and b.pre.len == 0) return .eq;
         if (a.pre.len == 0) return .gt;
         if (b.pre.len == 0) return .lt;
@@ -65,8 +58,6 @@ pub const Version = struct {
     }
 };
 
-/// Dot separated identifiers: numbers compare as numbers and sort before text,
-/// a shorter list sorts before a longer one that starts the same.
 fn comparePre(a: []const u8, b: []const u8) std.math.Order {
     var ia = std.mem.splitScalar(u8, a, '.');
     var ib = std.mem.splitScalar(u8, b, '.');
@@ -90,13 +81,6 @@ fn comparePre(a: []const u8, b: []const u8) std.math.Order {
     }
 }
 
-/// Unattended updates are deliberately timid. A release may be installed
-/// without a human only if all of these hold:
-///   - it is newer than what is running
-///   - it is a real release, not a prerelease
-///   - it is a patch release of the same major.minor
-/// Anything bigger (and everything before 1.0 where a minor bump may break
-/// things) waits for someone to run `nodos update` and read the changelog.
 pub fn autoAllowed(current: Version, candidate: Version) bool {
     if (!candidate.newerThan(current)) return false;
     if (candidate.isPrerelease()) return false;
@@ -127,18 +111,14 @@ test "ordering follows semver" {
     try std.testing.expect((try v("1.1.0")).newerThan(try v("1.0.9")));
     try std.testing.expect((try v("2.0.0")).newerThan(try v("1.99.99")));
     try std.testing.expect(!(try v("1.0.0")).newerThan(try v("1.0.0")));
-    // numeric, not text: 10 beats 9
     try std.testing.expect((try v("1.10.0")).newerThan(try v("1.9.0")));
-    // release beats its own prerelease
     try std.testing.expect((try v("1.0.0")).newerThan(try v("1.0.0-rc.1")));
     try std.testing.expect(!(try v("1.0.0-rc.1")).newerThan(try v("1.0.0")));
-    // the spec's example chain
     const chain = [_][]const u8{ "1.0.0-alpha", "1.0.0-alpha.1", "1.0.0-alpha.beta", "1.0.0-beta", "1.0.0-beta.2", "1.0.0-beta.11", "1.0.0-rc.1", "1.0.0" };
     for (chain[0 .. chain.len - 1], chain[1..]) |lo, hi| {
         try std.testing.expect((try v(hi)).newerThan(try v(lo)));
         try std.testing.expect(!(try v(lo)).newerThan(try v(hi)));
     }
-    // a dev build of 0.0.1 is older than the real 0.0.1
     try std.testing.expect((try v("0.0.1")).newerThan(try v("0.0.1-dev")));
 }
 
@@ -146,15 +126,12 @@ test "auto update only takes patch releases of the same minor" {
     const v = Version.parse;
     try std.testing.expect(autoAllowed(try v("0.1.0"), try v("0.1.1")));
     try std.testing.expect(autoAllowed(try v("1.4.2"), try v("1.4.9")));
-    // minor and major need a human
     try std.testing.expect(!autoAllowed(try v("0.1.0"), try v("0.2.0")));
     try std.testing.expect(!autoAllowed(try v("1.4.2"), try v("1.5.0")));
     try std.testing.expect(!autoAllowed(try v("1.4.2"), try v("2.0.0")));
-    // never backwards, never sideways, never prereleases
     try std.testing.expect(!autoAllowed(try v("1.4.2"), try v("1.4.1")));
     try std.testing.expect(!autoAllowed(try v("1.4.2"), try v("1.4.2")));
     try std.testing.expect(!autoAllowed(try v("1.4.2"), try v("1.4.3-rc.1")));
-    // a dev build moving to a different minor stays manual
     try std.testing.expect(!autoAllowed(try v("0.0.1-dev"), try v("0.1.0")));
 }
 

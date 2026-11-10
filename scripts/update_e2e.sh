@@ -1,17 +1,4 @@
 #!/usr/bin/env bash
-# End-to-end test of `nodos update` against a local fake release server, using
-# a throwaway signing key. Nothing here touches the internet or any real key.
-#
-# What it proves: a good signed release installs; a tampered, wrongly signed,
-# unsigned, mislabelled or key-less one is refused and changes nothing;
-# rollback works; unattended updates obey their extra rules.
-#
-# Usage: scripts/update_e2e.sh NEW_BUILD_DIR CURRENT_BIN SIGN_TOOL
-#   NEW_BUILD_DIR  a zig prefix built with -Dbuild-version=9.9.9 (contains bin/nodos)
-#   CURRENT_BIN    the nodos binary that plays "the installed version"
-#   SIGN_TOOL      the release-sign executable
-# On Linux CI the service-restart and automatic-rollback part is covered by
-# scripts/update_service_e2e.sh instead, because it needs systemd.
 set -euo pipefail
 
 NEW_DIR="$1"
@@ -25,7 +12,6 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Helpers shared with the systemd test (needs WORK and SIGN first).
 # shellcheck source=lib/mirror.sh
 . "$(dirname "$0")/lib/mirror.sh"
 
@@ -35,7 +21,6 @@ NEW_BIN="$NEW_DIR/bin/nodos"
 
 make_keys
 
-# --- the "installed" binary the updater will replace
 INST="$WORK/inst"; mkdir -p "$INST"
 cp "$CURRENT" "$INST/nodos"
 chmod +x "$INST/nodos"
@@ -48,7 +33,6 @@ start_mirror
 SERVER_PID="$MIRROR_PID"
 
 CONF="$WORK/nodos.conf"
-# The server creates its data directory at first start; do the same here.
 mkdir -p "$WORK/data"
 printf 'data_dir = %s\n' "$(native "$WORK/data")" > "$CONF"
 UPDATE=("$CURRENT" update --binary "$(native "$INSTALLED")" --mirror "http://127.0.0.1:$PORT" --config "$(native "$CONF")")
@@ -61,19 +45,16 @@ expect_refused() {
     echo "ok: $label refused, installed binary untouched ($BEFORE)"
 }
 
-# 1. nothing newer yet (the mirror starts out serving v0.0.0)
 say "up to date"
 "${UPDATE[@]}" --check > "$WORK/out.txt" 2>&1 || { [ $? -eq 10 ] && fail "reported an update when none exists"; }
 grep -q "up to date" "$WORK/out.txt" || { cat "$WORK/out.txt"; fail "expected 'up to date'"; }
 
-# 2. a newer release exists: --check says so, with exit code 10
 make_release "v9.9.9" "$NEW_BIN" good
 say "check finds it"
 set +e; "${UPDATE[@]}" --check > "$WORK/out.txt" 2>&1; CODE=$?; set -e
 [ "$CODE" -eq 10 ] || { cat "$WORK/out.txt"; fail "--check should exit 10 when an update exists, got $CODE"; }
 grep -q "9.9.9" "$WORK/out.txt" || fail "--check did not name the version"
 
-# 3. attacks
 say "attacks"
 make_release "v9.9.9" "$NEW_BIN" tampered
 expect_refused "tampered tarball" --pubkey "$PUBLIC" --yes
@@ -88,7 +69,6 @@ expect_refused "no signing key available to this build" --yes
 grep -q "no release signing key" "$WORK/out.txt" || { cat "$WORK/out.txt"; fail "the no-key refusal should explain itself"; }
 expect_refused "garbage public key" --pubkey "not hex" --yes
 
-# 4. a signed release whose binary lies about its version
 LIAR="$WORK/liar"; mkdir -p "$LIAR"
 if [ "$(uname -s)" = "Linux" ]; then
     printf '#!/bin/sh\necho "nodos 1.2.3"\n' > "$LIAR/nodos"; chmod +x "$LIAR/nodos"
@@ -96,7 +76,6 @@ if [ "$(uname -s)" = "Linux" ]; then
     expect_refused "binary that reports a different version" --pubkey "$PUBLIC" --yes
 fi
 
-# 5. the real thing
 say "good release installs"
 make_release "v9.9.9" "$NEW_BIN" good
 "${UPDATE[@]}" --pubkey "$PUBLIC" --yes > "$WORK/out.txt" 2>&1 || { cat "$WORK/out.txt"; fail "a good signed release was refused"; }
@@ -106,16 +85,13 @@ make_release "v9.9.9" "$NEW_BIN" good
 [ ! -e "$INST/nodos.new" ] || fail "left nodos.new behind"
 echo "ok: installed 9.9.9, backup holds $BEFORE"
 
-# 6. already current
 say "second run is a no-op"
 RUN=("$INSTALLED" update --binary "$(native "$INSTALLED")" --mirror "http://127.0.0.1:$PORT" --config "$(native "$CONF")" --pubkey "$PUBLIC")
 "${RUN[@]}" --yes > "$WORK/out.txt" 2>&1 || true
 grep -q "Nothing to do" "$WORK/out.txt" || { cat "$WORK/out.txt"; fail "should say nothing to do"; }
 
-# 7. rollback
 say "rollback"
 if [ "$(uname -s)" = "Linux" ]; then
-    # on Linux the rollback runs as the (root) installed binary on its own file
     "$CURRENT" update --rollback --binary "$INSTALLED" --config "$CONF" > "$WORK/out.txt" 2>&1 || { cat "$WORK/out.txt"; fail "rollback failed"; }
 else
     "$CURRENT" update --rollback --binary "$(native "$INSTALLED")" --config "$(native "$CONF")" > "$WORK/out.txt" 2>&1 || { cat "$WORK/out.txt"; fail "rollback failed"; }
@@ -125,7 +101,6 @@ fi
 grep -q "bad=v9.9.9" "$WORK/data/update-state" || fail "rolled-back version was not remembered as bad"
 echo "ok: rolled back to $BEFORE and remembered 9.9.9"
 
-# 8. a version marked bad is not reinstalled without --force
 make_release "v9.9.9" "$NEW_BIN" good
 expect_refused "version known to be bad" --pubkey "$PUBLIC" --yes
 grep -q "failed" "$WORK/out.txt" || { cat "$WORK/out.txt"; fail "should explain it failed before"; }
@@ -133,7 +108,6 @@ grep -q "failed" "$WORK/out.txt" || { cat "$WORK/out.txt"; fail "should explain 
 [ "$(installed_version)" = "9.9.9" ] || fail "--force did not install"
 echo "ok: --force overrides a remembered failure"
 
-# 9. unattended rules
 say "auto-run policy"
 cp "$CURRENT" "$INST/nodos"; chmod +x "$INST/nodos"; rm -f "$INST/nodos.previous" "$WORK/data/update-state"
 make_release "v9.9.9" "$NEW_BIN" good
@@ -142,7 +116,6 @@ grep -q "waits for a manual" "$WORK/out.txt" || { cat "$WORK/out.txt"; fail "a b
 [ "$(installed_version)" = "$BEFORE" ] || fail "auto-run installed a non-patch release"
 echo "ok: auto-run will not take a big jump"
 
-# 10. the case unattended updates are FOR: a patch release that has been out a while
 if [ -n "${PATCH_DIR:-}" ]; then
     PATCH_BIN="$PATCH_DIR/bin/nodos"
     [ -e "$PATCH_BIN" ] || PATCH_BIN="$PATCH_DIR/bin/nodos.exe"
@@ -150,14 +123,12 @@ if [ -n "${PATCH_DIR:-}" ]; then
     cat "$NEW_BIN" > "$INST/nodos"; chmod +x "$INST/nodos"; rm -f "$INST/nodos.previous" "$WORK/data/update-state"
     [ "$(installed_version)" = "9.9.9" ] || fail "setup: expected 9.9.9 installed"
 
-    # fresh: published just now, inside the soak window
     PUBLISHED="$(date -u +%Y-%m-%dT%H:%M:%SZ)" make_release "v9.9.10" "$PATCH_BIN" good
     "${UPDATE[@]}" --pubkey "$PUBLIC" --auto-run > "$WORK/out.txt" 2>&1 || { cat "$WORK/out.txt"; fail "auto-run should exit 0 when it waits"; }
     grep -q "waiting for it to prove itself" "$WORK/out.txt" || { cat "$WORK/out.txt"; fail "a fresh release must wait out the soak period"; }
     [ "$(installed_version)" = "9.9.9" ] || fail "auto-run installed a release inside its soak period"
     echo "ok: fresh release waits"
 
-    # known bad
     printf 'bad=v9.9.10\n' > "$WORK/data/update-state"
     PUBLISHED="2026-01-01T00:00:00Z" make_release "v9.9.10" "$PATCH_BIN" good
     "${UPDATE[@]}" --pubkey "$PUBLIC" --auto-run > "$WORK/out.txt" 2>&1 || fail "auto-run should exit 0 when it skips"
@@ -165,13 +136,11 @@ if [ -n "${PATCH_DIR:-}" ]; then
     [ "$(installed_version)" = "9.9.9" ] || fail "auto-run installed a known-bad version"
     echo "ok: known-bad release is skipped"
 
-    # mature, patch, not bad: installs
     rm -f "$WORK/data/update-state"
     "${UPDATE[@]}" --pubkey "$PUBLIC" --auto-run > "$WORK/out.txt" 2>&1 || { cat "$WORK/out.txt"; fail "a mature patch release should install under auto-run"; }
     [ "$(installed_version)" = "9.9.10" ] || { cat "$WORK/out.txt"; fail "installed $(installed_version), wanted 9.9.10"; }
     echo "ok: mature patch release installed unattended"
 
-    # a prerelease is never taken unattended
     PUBLISHED="2026-01-01T00:00:00Z" PRERELEASE=true make_release "v9.9.11" "$PATCH_BIN" good
     "${UPDATE[@]}" --pubkey "$PUBLIC" --auto-run > "$WORK/out.txt" 2>&1 || true
     [ "$(installed_version)" = "9.9.10" ] || fail "auto-run took a prerelease"

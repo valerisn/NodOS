@@ -1,4 +1,3 @@
-/* Tokens first. Everything below reads from these, so a retheme is one block. */
 :root {
   --bg: #101214;
   --bg-raise: #161a1d;
@@ -59,7 +58,6 @@ a { color: inherit; text-decoration: none; }
 }
 .wordmark span { color: var(--primary); }
 
-/* ---- sign in ---- */
 .login {
   min-height: 100vh;
   display: grid;
@@ -106,7 +104,6 @@ button.quiet {
 button.quiet:hover { color: var(--text); border-color: var(--muted); }
 .form-error { margin: 4px 0 0; color: var(--crit); font-size: 14px; }
 
-/* ---- shell ---- */
 .app { min-height: 100vh; }
 
 .top {
@@ -190,7 +187,6 @@ button.quiet:hover { color: var(--text); border-color: var(--muted); }
 
 .view { padding: 0 var(--gutter) 56px; }
 
-/* ---- channels: the overview's one signature element ---- */
 .channel {
   display: grid;
   grid-template-columns: 210px minmax(0, 1fr);
@@ -217,7 +213,6 @@ button.quiet:hover { color: var(--text); border-color: var(--muted); }
   color: var(--muted); font-size: 12px; margin-top: 4px;
 }
 
-/* ---- sections below the channels ---- */
 .block { border-top: 1px solid var(--rule); padding: 22px 0 6px; }
 .block h2 { margin: 0 0 14px; font-size: 16px; font-weight: 600; }
 .cores { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 14px 28px; }
@@ -233,7 +228,6 @@ button.quiet:hover { color: var(--text); border-color: var(--muted); }
 .temp b { font-size: 22px; font-weight: 400; margin-right: 8px; }
 .temp span { color: var(--muted); font-size: 13px; }
 
-/* ---- tables ---- */
 table { width: 100%; border-collapse: collapse; }
 th {
   text-align: left; font-weight: 400; color: var(--muted); font-size: 13px;
@@ -251,7 +245,6 @@ tr.bad td { color: var(--crit); }
 tr.bad td.mount-dev { color: var(--crit); opacity: 0.8; }
 td.when { white-space: nowrap; color: var(--muted); }
 
-/* ---- docker ---- */
 .state::before {
   content: "";
   display: inline-block;

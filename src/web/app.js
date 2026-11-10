@@ -5,16 +5,13 @@ import { views } from "./views.js";
 
 const $ = (id) => document.getElementById(id);
 
-// Rolling history for the charts, seeded from /history then extended by the stream.
 const hist = { cpu: [], mem: [], rx: [], tx: [] };
 let role = "viewer";
 let latest = null;
 let lastTs = 0;
-let current = null; // { name, view }
-let source = null; // EventSource
+let current = null;
+let source = null;
 let retryTimer = null;
-
-// ---------------------------------------------------------------- screens
 
 function showLogin() {
   stopStream();
@@ -69,11 +66,8 @@ function renderAlerts(list) {
   );
 }
 
-// ---------------------------------------------------------------- updates
-
 let updateTimer = null;
 
-// Remember a dismissal per version, so a newer release shows the notice again.
 function dismissedVersion() {
   try {
     return localStorage.getItem("nodos.update.dismissed") || "";
@@ -86,7 +80,6 @@ function rememberDismissed(version) {
   try {
     localStorage.setItem("nodos.update.dismissed", version);
   } catch {
-    // Private mode or blocked storage: the notice just comes back next load.
   }
 }
 
@@ -101,13 +94,11 @@ async function checkUpdate() {
     $("update-text").textContent = `NodOS ${u.latest.replace(/^v/, "")} is available. You have ${u.current}. To update, run this on the server:`;
     $("update-cmd").textContent = u.command;
     const link = $("update-link");
-    // Only link to an https page; the value comes from the release server.
     link.hidden = !/^https:\/\//.test(u.page);
     if (!link.hidden) link.href = u.page;
     $("update-dismiss").dataset.version = u.latest;
     box.hidden = false;
   } catch {
-    // The notice is a nicety. Any failure just leaves it hidden.
   }
 }
 
@@ -126,8 +117,6 @@ function notice(text) {
   $("notice").hidden = !text;
   $("notice").textContent = text || "";
 }
-
-// ---------------------------------------------------------------- routing
 
 function routeName() {
   const name = location.hash.replace(/^#\/?/, "") || "overview";
@@ -153,8 +142,6 @@ window.addEventListener("hashchange", () => {
   if (!$("app").hidden) route();
 });
 
-// ---------------------------------------------------------------- data
-
 function pushPoint(snap) {
   const memPct = snap.memory.total_kb ? (snap.memory.used_kb / snap.memory.total_kb) * 100 : 0;
   let rx = 0, tx = 0;
@@ -172,8 +159,6 @@ function pushPoint(snap) {
 
 function onSnapshot(snap) {
   latest = snap;
-  // The server sends the current snapshot again on connect, and /history may
-  // already include it. Plot each timestamp once.
   if (snap.ts > lastTs) {
     pushPoint(snap);
     lastTs = snap.ts;
@@ -193,11 +178,8 @@ async function seedHistory() {
     hist.tx = h.tx_bps;
     lastTs = h.ts.length ? h.ts[h.ts.length - 1] : 0;
   } catch {
-    // Charts just start empty; the stream will fill them in.
   }
 }
-
-// ---------------------------------------------------------------- stream
 
 function stopStream() {
   if (source) source.close();
@@ -208,8 +190,6 @@ function stopStream() {
 async function startStream() {
   stopStream();
   setConn("connecting", "Connecting");
-  // The first snapshot can lag by one sample interval, so ask for it directly
-  // and paint immediately instead of showing an empty page.
   try {
     await seedHistory();
     const snap = await get("/system");
@@ -233,21 +213,16 @@ async function startStream() {
     try {
       onSnapshot(JSON.parse(e.data));
     } catch {
-      // A malformed event is dropped; the next one will be fine.
     }
   });
   source.addEventListener("alerts", (e) => {
     try {
       renderAlerts(JSON.parse(e.data).alerts);
     } catch {
-      // Keep whatever alerts are on screen; the next change resends the list.
     }
   });
   source.addEventListener("error", async () => {
     setConn("down", "Reconnecting");
-    // EventSource retries on its own for dropped connections. If it gave up
-    // (readyState CLOSED) the server answered with an error status, so find
-    // out why: session gone means sign in again, anything else means retry.
     if (source && source.readyState === EventSource.CLOSED) {
       source.close();
       try {
@@ -260,8 +235,6 @@ async function startStream() {
     }
   });
 }
-
-// ---------------------------------------------------------------- auth
 
 $("login-form").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -284,7 +257,6 @@ $("logout").addEventListener("click", async () => {
   try {
     await post("/logout");
   } catch {
-    // Already signed out server-side; fall through to the login screen.
   }
   latest = null;
   lastTs = 0;

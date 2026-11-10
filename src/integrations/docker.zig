@@ -1,15 +1,3 @@
-//! Docker Engine API over its Unix socket.
-//!
-//! Security notes, because this is the riskiest module in the project:
-//!  - Access to the Docker socket is root-equivalent on the host. Everything
-//!    here is reachable only from authenticated, CSRF-protected endpoints and
-//!    destructive actions are admin-only and audited by the caller.
-//!  - Container references are validated against a strict charset before they
-//!    go anywhere near a request line. There is no shell and no string passed
-//!    through one; the only "command" is one of three fixed verbs.
-//!  - We send HTTP/1.0 so the daemon replies with a plain body that ends at
-//!    EOF. No chunked decoding on the hot path, and the connection is closed
-//!    after each request, so there is no state to leak between users.
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -18,14 +6,10 @@ const build_options = @import("build_options");
 pub const Client = struct {
     io: Io,
     socket_path: []const u8,
-    /// A wedged daemon must not wedge us. Without a deadline each dashboard
-    /// poll against a hung dockerd would pin a connection slot forever.
     timeout_ms: u32 = 8000,
 
     pub const Error = error{
-        /// Socket missing, refused, or permission denied.
         Unavailable,
-        /// Connected, but no complete answer inside `timeout_ms`.
         TimedOut,
         BadResponse,
         ResponseTooLarge,
@@ -35,25 +19,18 @@ pub const Client = struct {
 
     pub const Response = struct {
         status: u16,
-        /// Points into the arena passed to `request`.
         body: []const u8,
     };
 
-    /// One request, one connection. `arena` owns the returned body.
     pub fn request(c: Client, arena: Allocator, method: []const u8, target: []const u8, max_body: usize) Error!Response {
-        // Belt and braces: callers validate ids, this stops a bug there from
-        // becoming request smuggling.
         if (std.mem.findAny(u8, target, " \r\n\t") != null) return error.InvalidTarget;
         if (std.mem.findAny(u8, method, " \r\n\t") != null) return error.InvalidTarget;
 
-        // Dev builds only: `docker_socket = fake` serves invented containers
-        // so the UI can be built without a daemon. Compiled out otherwise.
         if (comptime build_options.fake_host) {
             if (std.mem.eql(u8, c.socket_path, "fake")) return fake.respond(arena, method, target);
         }
 
-        // Race the exchange against a timer; whichever finishes first wins and
-        // the other is cancelled (which interrupts a blocked read).
+        // a wedged dockerd must not pin a connection slot forever
         const Race = union(enum) {
             reply: Error!Response,
             timer: Io.Cancelable!void,
@@ -69,7 +46,6 @@ pub const Client = struct {
             sel.cancelDiscard();
             return error.Unavailable;
         };
-        // Stop the loser and wait for it, so nothing touches the arena after we return.
         sel.cancelDiscard();
         return switch (first) {
             .reply => |r| r,
@@ -96,7 +72,6 @@ pub const Client = struct {
 
         var rbuf: [4096]u8 = undefined;
         var r = stream.reader(c.io, &rbuf);
-        // Headers add a few hundred bytes on top of the body limit.
         const raw = r.interface.allocRemaining(arena, .limited(max_body + 8192)) catch |err| switch (err) {
             error.StreamTooLong => return error.ResponseTooLarge,
             error.OutOfMemory => return error.OutOfMemory,
@@ -108,8 +83,6 @@ pub const Client = struct {
     }
 };
 
-/// Splits a raw HTTP response into status and body, decoding chunked bodies
-/// in case a daemon chunks even though we asked for HTTP/1.0.
 pub fn parseResponse(arena: Allocator, raw: []const u8) Client.Error!Client.Response {
     const head_end = std.mem.find(u8, raw, "\r\n\r\n") orelse return error.BadResponse;
     const head = raw[0..head_end];
@@ -117,7 +90,6 @@ pub fn parseResponse(arena: Allocator, raw: []const u8) Client.Error!Client.Resp
 
     var lines = std.mem.splitSequence(u8, head, "\r\n");
     const status_line = lines.next() orelse return error.BadResponse;
-    // "HTTP/1.0 200 OK"
     var parts = std.mem.splitScalar(u8, status_line, ' ');
     const proto = parts.next() orelse return error.BadResponse;
     if (!std.mem.startsWith(u8, proto, "HTTP/1.")) return error.BadResponse;
@@ -140,23 +112,18 @@ fn dechunk(arena: Allocator, body: []const u8) Client.Error![]const u8 {
     while (true) {
         const nl = std.mem.findPos(u8, body, i, "\r\n") orelse return error.BadResponse;
         const size_txt = std.mem.trim(u8, body[i..nl], " \t");
-        // chunk extensions (";...") are legal and ignored
         const size_end = std.mem.findScalar(u8, size_txt, ';') orelse size_txt.len;
         const size = std.fmt.parseInt(usize, size_txt[0..size_end], 16) catch return error.BadResponse;
         i = nl + 2;
         if (size == 0) break;
         if (i + size > body.len) return error.BadResponse;
         try out.appendSlice(arena, body[i .. i + size]);
-        i += size + 2; // data + trailing CRLF
+        i += size + 2;
         if (i > body.len) return error.BadResponse;
     }
     return out.items;
 }
 
-// ---------------------------------------------------------------- validation
-
-/// Container id or name. Docker names allow [a-zA-Z0-9][a-zA-Z0-9_.-]*, ids are
-/// hex. One rule covers both, and nothing in it can alter a URL.
 pub fn validRef(ref: []const u8) bool {
     if (ref.len == 0 or ref.len > 64) return false;
     if (!std.ascii.isAlphanumeric(ref[0])) return false;
@@ -181,7 +148,7 @@ pub const ActionResult = enum { done, unchanged, not_found, failed };
 pub fn classifyAction(status: u16) ActionResult {
     return switch (status) {
         204 => .done,
-        304 => .unchanged, // already running / already stopped
+        304 => .unchanged,
         404 => .not_found,
         else => .failed,
     };
@@ -190,7 +157,6 @@ pub fn classifyAction(status: u16) ActionResult {
 pub fn runAction(c: Client, arena: Allocator, ref: []const u8, action: Action) Client.Error!ActionResult {
     if (!validRef(ref)) return error.InvalidTarget;
     var buf: [160]u8 = undefined;
-    // Ten second grace on stop/restart, the Docker CLI default.
     const target = switch (action) {
         .start => std.fmt.bufPrint(&buf, "/containers/{s}/start", .{ref}),
         .stop => std.fmt.bufPrint(&buf, "/containers/{s}/stop?t=10", .{ref}),
@@ -199,8 +165,6 @@ pub fn runAction(c: Client, arena: Allocator, ref: []const u8, action: Action) C
     const resp = try c.request(arena, "POST", target, 64 * 1024);
     return classifyAction(resp.status);
 }
-
-// ---------------------------------------------------------------- listing
 
 pub const Container = struct {
     id: []const u8,
@@ -220,13 +184,10 @@ const Raw = struct {
     Created: i64 = 0,
 };
 
-/// The API response has to fit one fixed buffer, so very large hosts see the
-/// first 64 and a `total` they can compare against. Pagination comes later.
 pub const max_containers = 64;
 
 pub const Listing = struct {
     items: []Container,
-    /// How many containers the daemon reported, before the cap.
     total: usize,
 };
 
@@ -285,10 +246,6 @@ pub fn writeContainers(w: *Io.Writer, list: Listing) Io.Writer.Error!void {
     try j.endObject();
 }
 
-// ---------------------------------------------------------------- logs
-
-/// Docker multiplexes stdout and stderr into 8 byte framed chunks unless the
-/// container has a TTY. Returns the plain text either way.
 pub fn demuxLogs(arena: Allocator, body: []const u8) Allocator.Error![]const u8 {
     const framed = body.len >= 8 and body[0] <= 2 and body[1] == 0 and body[2] == 0 and body[3] == 0;
     if (!framed) return body;
@@ -304,8 +261,6 @@ pub fn demuxLogs(arena: Allocator, body: []const u8) Allocator.Error![]const u8 
     return out.items;
 }
 
-/// Replaces bytes that would make the JSON invalid. Log output is arbitrary
-/// bytes, and a binary blob in one container must not break the page.
 fn sanitize(arena: Allocator, s: []const u8) Allocator.Error![]const u8 {
     if (std.unicode.utf8ValidateSlice(s)) return s;
     const out = try arena.dupe(u8, s);
@@ -326,15 +281,13 @@ fn sanitize(arena: Allocator, s: []const u8) Allocator.Error![]const u8 {
     return out;
 }
 
-/// Last `tail` lines as {"lines":[...],"truncated":bool}. Output stops once
-/// `w` is nearly full instead of failing, and says so.
 pub fn writeLogs(arena: Allocator, w: *Io.Writer, text: []const u8, tail: usize) (Io.Writer.Error || Allocator.Error)!void {
     const clean = try sanitize(arena, text);
     var lines: std.ArrayList([]const u8) = .empty;
     var it = std.mem.splitScalar(u8, clean, '\n');
     while (it.next()) |l| {
         const trimmed = std.mem.trimEnd(u8, l, "\r");
-        if (trimmed.len == 0 and it.peek() == null) break; // trailing newline
+        if (trimmed.len == 0 and it.peek() == null) break;
         try lines.append(arena, trimmed);
     }
     const start = lines.items.len -| tail;
@@ -345,7 +298,6 @@ pub fn writeLogs(arena: Allocator, w: *Io.Writer, text: []const u8, tail: usize)
     try j.beginArray();
     var truncated = start > 0 and false;
     for (lines.items[start..]) |l| {
-        // Leave headroom for the closing brackets and the flag.
         if (w.buffered().len + l.len * 2 + 64 > w.buffer.len - 64) {
             truncated = true;
             break;
@@ -368,10 +320,6 @@ pub fn fetchLogs(c: Client, arena: Allocator, ref: []const u8, tail: usize) Clie
     return demuxLogs(arena, resp.body);
 }
 
-// ---------------------------------------------------------------- dev fake
-
-/// Stateful pretend daemon for `-Dfake-host=true`. Not thread safe and not
-/// meant to be: one developer clicking buttons.
 const fake = struct {
     const Entry = struct { id: []const u8, name: []const u8, image: []const u8, up_status: []const u8 };
     const entries = [_]Entry{
@@ -409,7 +357,6 @@ const fake = struct {
 
         if (std.mem.eql(u8, verb, "logs")) {
             const text = try std.fmt.allocPrint(arena, "{s} starting\nlistening on :8080\nGET /health 200 1ms\nGET /health 200 1ms\nwarn: slow request took 812ms\n", .{entries[idx].name[1..]});
-            // framed like a real non-TTY container
             var out: std.ArrayList(u8) = .empty;
             try out.appendSlice(arena, &.{ 1, 0, 0, 0 });
             var len: [4]u8 = undefined;
@@ -435,8 +382,6 @@ const fake = struct {
         return .{ .status = 404, .body = "" };
     }
 };
-
-// ---------------------------------------------------------------- tests
 
 test "ref validation rejects anything that could alter a request" {
     try std.testing.expect(validRef("web"));
@@ -513,11 +458,9 @@ test "log demux handles framed and tty output" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    // stdout "hello\n" then stderr "oops\n"
     const framed = "\x01\x00\x00\x00\x00\x00\x00\x06hello\n\x02\x00\x00\x00\x00\x00\x00\x05oops\n";
     try std.testing.expectEqualStrings("hello\noops\n", try demuxLogs(a, framed));
     try std.testing.expectEqualStrings("plain tty text\n", try demuxLogs(a, "plain tty text\n"));
-    // frame claims more bytes than exist: take what is there, don't read past the end
     try std.testing.expectEqualStrings("hi", try demuxLogs(a, "\x01\x00\x00\x00\x00\x00\x00\x63hi"));
 }
 
@@ -552,8 +495,6 @@ test "logs truncate instead of overflowing the output buffer" {
     try std.testing.expect(parsed.value.object.get("truncated").?.bool);
 }
 
-// A fake daemon on a real Unix socket: accepts one connection, checks the
-// request line, answers with a canned response.
 fn fakeDaemon(io: Io, server: *Io.net.Server, expect_line: []const u8, response: []const u8, ok: *bool) Io.Cancelable!void {
     const stream = server.accept(io) catch return;
     defer stream.close(io);
@@ -561,7 +502,6 @@ fn fakeDaemon(io: Io, server: *Io.net.Server, expect_line: []const u8, response:
     var r = stream.reader(io, &rbuf);
     const line = r.interface.takeDelimiter('\n') catch return;
     ok.* = line != null and std.mem.startsWith(u8, line.?, expect_line);
-    // drain the rest of the headers
     while (true) {
         const l = r.interface.takeDelimiter('\n') catch break;
         if (l == null or std.mem.trim(u8, l.?, "\r").len == 0) break;
@@ -581,7 +521,6 @@ test "client talks to a fake daemon over a unix socket" {
     const sock_path = try std.fmt.bufPrint(&path_buf, "{s}nodos-docker-test-{x}.sock", .{ if (@import("builtin").os.tag == .windows) "C:\\Windows\\Temp\\" else "/tmp/", nonce });
     const addr = try Io.net.UnixAddress.init(sock_path);
     var server = addr.listen(io, .{}) catch |err| switch (err) {
-        // Some sandboxes forbid Unix sockets; that is not a bug in the client.
         error.AddressFamilyUnsupported, error.AccessDenied, error.PermissionDenied, error.FileNotFound => return error.SkipZigTest,
         else => return err,
     };
@@ -601,13 +540,11 @@ test "client talks to a fake daemon over a unix socket" {
     try std.testing.expectEqualStrings("web", list.items[0].name);
 }
 
-// A daemon that takes the connection and then says nothing, like a wedged dockerd.
 fn silentDaemon(io: Io, server: *Io.net.Server) Io.Cancelable!void {
     const stream = server.accept(io) catch return;
     defer stream.close(io);
     var rbuf: [512]u8 = undefined;
     var r = stream.reader(io, &rbuf);
-    // Read the request, then hold the connection open without answering.
     _ = r.interface.takeDelimiter('\n') catch return;
     try io.sleep(.fromSeconds(30), .awake);
 }
@@ -636,15 +573,12 @@ test "a daemon that never answers times out instead of hanging" {
     const started = Io.Timestamp.now(io, .awake);
     try std.testing.expectError(error.TimedOut, client.request(arena.allocator(), "GET", "/containers/json", 1024));
     const took_ms = started.durationTo(Io.Timestamp.now(io, .awake)).toMilliseconds();
-    // generous upper bound: the point is "about a third of a second", not 30 s
     try std.testing.expect(took_ms < 5000);
 }
 
 test "client reports unavailable when the socket does not exist" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
-    // Missing file in a directory that exists, so every OS reports "not found"
-    // the ordinary way instead of a surprising status code.
     const missing = if (@import("builtin").os.tag == .windows) "C:\\Windows\\Temp\\nodos-no-such.sock" else "/tmp/nodos-no-such.sock";
     const client: Client = .{ .io = std.testing.io, .socket_path = missing };
     try std.testing.expectError(error.Unavailable, client.request(arena.allocator(), "GET", "/containers/json", 1024));

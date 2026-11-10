@@ -1,19 +1,11 @@
-//! Parsers for Linux /proc text. Pure functions: text in, struct out, no I/O,
-//! so they are tested against fixtures on any OS. Reading the files lives in
-//! collect.zig.
 const std = @import("std");
 
 pub const ParseError = error{Malformed};
 
-// ---------------------------------------------------------------- cpu
-
 pub const max_cores = 128;
 
 pub const CpuTimes = struct {
-    /// Sum of all accounted jiffies. guest time is already inside user, so it
-    /// is deliberately not added again.
     total: u64 = 0,
-    /// idle + iowait. A core waiting on disk is not busy.
     idle: u64 = 0,
 };
 
@@ -37,7 +29,6 @@ pub fn parseCpuStat(text: []const u8) ParseError!CpuStat {
             const tok = f.next() orelse break;
             v[i] = std.fmt.parseInt(u64, tok, 10) catch return error.Malformed;
         }
-        // Old kernels give fewer than 8 columns; the missing ones are zero.
         if (i < 4) return error.Malformed;
         var total: u64 = 0;
         for (v) |x| total += x;
@@ -58,15 +49,12 @@ pub fn parseCpuStat(text: []const u8) ParseError!CpuStat {
     return out;
 }
 
-/// Busy percentage between two samples, 0 to 100. No elapsed time reads as 0.
 pub fn cpuPercent(prev: CpuTimes, cur: CpuTimes) f32 {
     if (cur.total <= prev.total) return 0;
     const dt: f64 = @floatFromInt(cur.total - prev.total);
     const di: f64 = @floatFromInt(@min(cur.idle -| prev.idle, cur.total - prev.total));
     return @floatCast((dt - di) / dt * 100.0);
 }
-
-// ---------------------------------------------------------------- memory
 
 pub const MemInfo = struct {
     total_kb: u64 = 0,
@@ -110,12 +98,9 @@ pub fn parseMeminfo(text: []const u8) ParseError!MemInfo {
         }
     }
     if (m.total_kb == 0) return error.Malformed;
-    // Kernels before 3.14 have no MemAvailable. This estimate is the old rule of thumb.
     if (!have_available) m.available_kb = m.free_kb + m.buffers_kb + m.cached_kb;
     return m;
 }
-
-// ---------------------------------------------------------------- network
 
 pub const max_ifaces = 16;
 
@@ -147,7 +132,6 @@ pub const NetDev = struct {
 pub fn parseNetDev(text: []const u8) ParseError!NetDev {
     var out: NetDev = .{};
     var lines = std.mem.splitScalar(u8, text, '\n');
-    // First two lines are headers.
     _ = lines.next();
     _ = lines.next();
     while (lines.next()) |line| {
@@ -177,8 +161,6 @@ pub fn parseNetDev(text: []const u8) ParseError!NetDev {
     return out;
 }
 
-// ---------------------------------------------------------------- misc
-
 pub fn parseUptime(text: []const u8) ParseError!f64 {
     var f = std.mem.tokenizeAny(u8, text, " \t\n");
     const tok = f.next() orelse return error.Malformed;
@@ -197,14 +179,11 @@ pub fn parseLoadavg(text: []const u8) ParseError!LoadAvg {
     return .{ .one = v[0], .five = v[1], .fifteen = v[2] };
 }
 
-/// /sys/class/thermal/*/temp holds millidegrees Celsius.
 pub fn parseMilliCelsius(text: []const u8) ParseError!f32 {
     const t = std.mem.trim(u8, text, " \t\r\n");
     const milli = std.fmt.parseInt(i32, t, 10) catch return error.Malformed;
     return @as(f32, @floatFromInt(milli)) / 1000.0;
 }
-
-// ---------------------------------------------------------------- mounts
 
 pub const max_mounts = 32;
 pub const max_path = 256;
@@ -233,8 +212,6 @@ pub const Mounts = struct {
     count: u8 = 0,
 };
 
-/// Filesystems worth showing on a storage page. tmpfs, proc, cgroup, overlay
-/// and friends are noise on a home server dashboard.
 const real_fs = [_][]const u8{
     "ext2", "ext3",     "ext4", "xfs",   "btrfs",   "zfs", "f2fs",
     "vfat", "exfat",    "ntfs", "ntfs3", "fuseblk", "nfs", "nfs4",
@@ -246,7 +223,6 @@ fn isRealFs(t: []const u8) bool {
     return false;
 }
 
-/// /proc/mounts escapes space, tab, newline and backslash as \040 \011 \012 \134.
 fn unescapeMountPath(src: []const u8, dst: []u8) ?usize {
     var n: usize = 0;
     var i: usize = 0;
@@ -288,8 +264,6 @@ pub fn parseMounts(text: []const u8) ParseError!Mounts {
         const plen = unescapeMountPath(mp, &m.path_buf) orelse continue;
         m.path_len = @intCast(plen);
 
-        // Bind mounts and btrfs subvolumes list one device many times. Keep
-        // the first, or the dashboard double counts capacity.
         var dup = false;
         for (out.items[0..out.count]) |*e| {
             if (std.mem.eql(u8, e.device(), dev) and std.mem.eql(u8, e.fstype(), fs)) dup = true;
@@ -300,8 +274,6 @@ pub fn parseMounts(text: []const u8) ParseError!Mounts {
     }
     return out;
 }
-
-// ---------------------------------------------------------------- tests
 
 const stat_fixture =
     \\cpu  4705 150 1120 16250 520 30 45 0 0 0
@@ -316,7 +288,6 @@ const stat_fixture =
 test "cpu stat parse" {
     const s = try parseCpuStat(stat_fixture);
     try std.testing.expectEqual(@as(u16, 2), s.core_count);
-    // 4705+150+1120+16250+520+30+45
     try std.testing.expectEqual(@as(u64, 22820), s.all.total);
     try std.testing.expectEqual(@as(u64, 16770), s.all.idle);
     try std.testing.expectEqual(@as(u64, 4100 + 130), s.cores[1].idle);
@@ -327,8 +298,7 @@ test "cpu percent" {
     const b: CpuTimes = .{ .total = 1100, .idle = 850 };
     try std.testing.expectApproxEqAbs(@as(f32, 50.0), cpuPercent(a, b), 0.001);
     try std.testing.expectEqual(@as(f32, 0), cpuPercent(b, b));
-    try std.testing.expectEqual(@as(f32, 0), cpuPercent(b, a)); // counter went backwards
-    // idle jumped more than total (iowait accounting glitch): clamp, don't go negative
+    try std.testing.expectEqual(@as(f32, 0), cpuPercent(b, a));
     try std.testing.expectEqual(@as(f32, 0), cpuPercent(.{ .total = 10, .idle = 0 }, .{ .total = 20, .idle = 50 }));
 }
 

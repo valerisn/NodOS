@@ -1,15 +1,3 @@
-//! systemd service status, logs and control, through `systemctl` and
-//! `journalctl` with fixed argument vectors. No shell, ever.
-//!
-//! The safety model is an allowlist: only units the admin names in the config
-//! (`services = ssh, nginx`) can be shown or touched. A unit name from a
-//! request is matched against that list by exact string comparison before it
-//! reaches any command line, and names are also checked for shape so that even
-//! a sloppy config can't smuggle in an option like `--now`.
-//!
-//! Starting and stopping needs OS permission. NodOS does not run as root; the
-//! admin grants it per unit with polkit (see docs/installation). Without that,
-//! start/stop fail with systemd's own message, which we pass through.
 const std = @import("std");
 const builtin = @import("builtin");
 const Io = std.Io;
@@ -19,17 +7,14 @@ const build_options = @import("build_options");
 pub const max_units = 32;
 
 pub const Error = error{
-    /// systemctl is missing, or this is not a systemd host.
     Unavailable,
     BadOutput,
     TimedOut,
     OutOfMemory,
 };
 
-/// One unit name, as written in the config, without the `.service` suffix.
 pub fn validUnit(name: []const u8) bool {
     if (name.len == 0 or name.len > 64) return false;
-    // A leading dash would be read by systemctl as an option.
     if (!std.ascii.isAlphanumeric(name[0])) return false;
     for (name) |c| {
         if (!(std.ascii.isAlphanumeric(c) or c == '_' or c == '.' or c == '-' or c == '@' or c == ':')) return false;
@@ -50,18 +35,12 @@ pub const Action = enum {
 pub const Status = struct {
     unit: []const u8,
     description: []const u8 = "",
-    /// loaded, not-found, masked, ...
     load: []const u8 = "",
-    /// active, inactive, failed, activating, deactivating
     active: []const u8 = "",
-    /// running, exited, dead, failed, ...
     sub: []const u8 = "",
     pid: u32 = 0,
 };
 
-/// Parses `systemctl show a b c -p ...` output: blocks of Key=Value lines,
-/// one blank line between units. Order of blocks follows the unit arguments.
-/// Strings point into `text`.
 pub fn parseShow(arena: Allocator, units: []const []const u8, text: []const u8) Error![]Status {
     const out = try arena.alloc(Status, units.len);
     for (out, units) |*o, u| o.* = .{ .unit = u };
@@ -118,14 +97,12 @@ pub fn writeStatuses(w: *Io.Writer, list: []const Status) Io.Writer.Error!void {
 
 pub const ActionOutcome = union(enum) {
     done,
-    /// systemctl said no; the message is its stderr, first line.
     refused: []const u8,
 };
 
 pub const Client = struct {
     io: Io,
     gpa: Allocator,
-    /// Allowlisted unit names. Owned by the config arena.
     units: []const []const u8,
 
     pub fn allowed(c: Client, unit: []const u8) bool {
@@ -156,19 +133,15 @@ pub const Client = struct {
         return .{ .code = code, .stdout = r.stdout, .stderr = r.stderr };
     }
 
-    /// Status of every allowlisted unit with one process launch.
     pub fn statuses(c: Client, arena: Allocator) Error![]Status {
         if (c.units.len == 0) return &.{};
         var argv: std.ArrayList([]const u8) = .empty;
         try argv.appendSlice(arena, &.{ "systemctl", "show", "--no-pager", "-p", "Description", "-p", "LoadState", "-p", "ActiveState", "-p", "SubState", "-p", "MainPID" });
-        // Names are validated and allowlisted, and a leading-dash name cannot
-        // pass validUnit, so each one is a plain positional argument.
         for (c.units) |u| try argv.append(arena, try std.fmt.allocPrint(arena, "{s}.service", .{u}));
         const out = try c.exec(argv.items, 256 * 1024);
         defer c.gpa.free(out.stdout);
         defer c.gpa.free(out.stderr);
         if (out.code != 0) return error.BadOutput;
-        // parseShow slices into its input, so copy it into the arena first.
         const text = try arena.dupe(u8, out.stdout);
         return parseShow(arena, c.units, text);
     }
@@ -183,7 +156,6 @@ pub const Client = struct {
         return .{ .refused = try arena.dupe(u8, firstLine(out.stderr)) };
     }
 
-    /// Last `lines` journal lines for the unit, plain text.
     pub fn logs(c: Client, arena: Allocator, unit: []const u8, lines: usize) Error![]const u8 {
         if (!c.allowed(unit)) return error.BadOutput;
         const name = try std.fmt.allocPrint(arena, "{s}.service", .{unit});
@@ -201,8 +173,6 @@ fn firstLine(s: []const u8) []const u8 {
     const nl = std.mem.findScalar(u8, t, '\n') orelse t.len;
     return t[0..@min(nl, 200)];
 }
-
-// ---------------------------------------------------------------- dev fake
 
 const fake = struct {
     const names = [_][]const u8{ "ssh", "nginx", "postgresql", "cron", "avahi-daemon" };
@@ -244,8 +214,6 @@ const fake = struct {
         return .{ .code = 0, .stdout = try gpa.dupe(u8, text), .stderr = try gpa.alloc(u8, 0) };
     }
 };
-
-// ---------------------------------------------------------------- tests
 
 test "unit names: shape check blocks options and path tricks" {
     try std.testing.expect(validUnit("ssh"));
@@ -315,7 +283,6 @@ test "short or empty show output leaves defaults instead of crashing" {
     try std.testing.expectEqualStrings("", list[1].active);
     const none = try parseShow(arena.allocator(), &units, "");
     try std.testing.expectEqualStrings("", none[0].active);
-    // more blocks than units: extra ones are ignored
     const extra = try parseShow(arena.allocator(), units[0..1], show_fixture);
     try std.testing.expectEqual(@as(usize, 1), extra.len);
 }

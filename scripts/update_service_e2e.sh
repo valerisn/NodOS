@@ -1,19 +1,4 @@
 #!/usr/bin/env bash
-# `nodos update` against the REAL installed service, under real systemd.
-# Linux only, and it needs root, because it replaces /usr/local/bin/nodos and
-# restarts nodos.service. CI runs it after scripts/install.sh on a throwaway
-# runner. Do not run it on a machine you care about.
-#
-# It uses a local mirror and a throwaway signing key, never the internet.
-#
-# Proves: a release that installs but does not come up healthy is rolled back
-# by itself and remembered as bad; a good release upgrades and the service
-# reports the new version; the dashboard's update notice appears; rollback
-# works; the auto-update toggle warns, enables and disables.
-#
-# Usage: sudo scripts/update_service_e2e.sh GOOD_BUILD_DIR SIGN_TOOL
-#   GOOD_BUILD_DIR  zig prefix built with -Dbuild-version=9.9.9
-#   SIGN_TOOL       the release-sign executable
 set -euo pipefail
 
 [ "$(id -u)" -eq 0 ] || { echo "run as root" >&2; exit 1; }
@@ -49,9 +34,7 @@ upd() { "$BIN" update --mirror "http://127.0.0.1:$PORT" --pubkey "$PUBLIC" --con
 make_release "v0.0.0" "$GOOD_BIN"
 start_mirror
 
-# ------------------------------------------------------------------ 1. broken release
 say "a release that installs but never comes up is rolled back by itself"
-# Passes `version` (so it clears the sanity check) but dies when asked to serve.
 cat > "$WORK/broken.sh" <<'EOF'
 #!/bin/sh
 if [ "$1" = "version" ]; then echo "nodos 9.9.10"; exit 0; fi
@@ -72,7 +55,6 @@ grep -q "bad=v9.9.10" "$DATA/update-state" || fail "the failed version was not r
 grep -q '"action":"update.rolledback"' "$DATA/audit.log" 2>/dev/null || echo "note: no audit line (the server had not created audit.log yet)"
 echo "ok: rolled back automatically, service healthy on $ORIGINAL, v9.9.10 remembered as bad"
 
-# ------------------------------------------------------------------ 2. good release
 say "a good release upgrades and the service reports it"
 make_release "v9.9.9" "$GOOD_BIN" good
 upd --yes > "$WORK/out.txt" 2>&1 || { cat "$WORK/out.txt"; fail "a good signed release failed to install"; }
@@ -83,10 +65,8 @@ systemctl is-active --quiet nodos || fail "service not running after the upgrade
 [ -x "$BIN.previous" ] || fail "no backup of the old binary"
 echo "ok: upgraded to 9.9.9, healthy, backup kept"
 
-# ------------------------------------------------------------------ 3. dashboard notice
 say "the running server tells the dashboard that an update exists"
 make_release "v9.9.11" "$GOOD_BIN" good   # latest.json now names something newer than what runs
-# point the hardened service at the mirror, restart, wait out the first-check delay
 printf '\nupdate_mirror = http://127.0.0.1:%s\n' "$PORT" >> "$CONF"
 printf '%s\n' 'notice test passphrase' | sudo -u nodos "$BIN" user add notice --config "$CONF" > /dev/null
 systemctl restart nodos
@@ -94,7 +74,6 @@ for _ in $(seq 1 50); do [ -n "$(health_version)" ] && break; sleep 0.2; done
 LOGIN="$(curl -s -i -d '{"username":"notice","password":"notice test passphrase"}' "http://127.0.0.1:8080/api/v1/login")"
 TOKEN="$(printf '%s' "$LOGIN" | grep -i '^set-cookie:' | sed -E 's/.*nodos_session=([^;]+).*/\1/')"
 [ -n "$TOKEN" ] || fail "could not sign in to read the update notice"
-# The server first looks 30 seconds after starting.
 FOUND=""
 for _ in $(seq 1 60); do
     BODY="$(curl -s -H "Cookie: nodos_session=$TOKEN" "http://127.0.0.1:8080/api/v1/update")"
@@ -105,12 +84,9 @@ done
 printf '%s' "$FOUND" | grep -q '"latest":"v9.9.11"' || fail "wrong latest version in: $FOUND"
 printf '%s' "$FOUND" | grep -q '"command":"sudo nodos update"' || fail "no update command in: $FOUND"
 echo "ok: $FOUND"
-# and the notice requires a session
 [ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:8080/api/v1/update")" = "401" ] || fail "update info must need a session"
-# turn the checker off again; it must stay quiet when told to
 sed -i '/^update_mirror/d' "$CONF"; printf 'update_check = false\n' >> "$CONF"
 
-# ------------------------------------------------------------------ 4. rollback command
 say "nodos update --rollback"
 "$BIN" update --rollback --config "$CONF" > "$WORK/out.txt" 2>&1 || { cat "$WORK/out.txt"; fail "rollback failed"; }
 cat "$WORK/out.txt"
@@ -119,7 +95,6 @@ for _ in $(seq 1 30); do [ "$(health_version)" = "$ORIGINAL" ] && break; sleep 1
 [ "$(health_version)" = "$ORIGINAL" ] || fail "service does not report $ORIGINAL after rollback"
 echo "ok: back on $ORIGINAL and healthy"
 
-# ------------------------------------------------------------------ 5. auto-update toggle
 say "auto-update toggle: warns first, then enables, then disables"
 OUT="$("$BIN" update --auto status 2>&1)"; echo "$OUT"
 echo "$OUT" | grep -q "off" || fail "auto-update should start off"

@@ -1,17 +1,8 @@
-//! Proving a download is the release we meant to install.
-//!
-//! The release publishes three things: the tarballs, `SHA256SUMS` listing their
-//! hashes, and `SHA256SUMS.sig`, an Ed25519 signature over the exact bytes of
-//! `SHA256SUMS`. We check the signature first, then the hash. A checksum file
-//! that merely sits next to the download only catches corruption; anyone who
-//! can replace the tarball can replace that too. The signature is what makes
-//! "came from the NodOS release process" something we can actually check.
 const std = @import("std");
 const Ed25519 = std.crypto.sign.Ed25519;
 const Sha256 = std.crypto.hash.sha2.Sha256;
 
 pub const Error = error{
-    /// This build has no public key compiled in (a development build).
     NoSigningKey,
     BadKey,
     BadSignature,
@@ -24,8 +15,6 @@ pub fn hexLen(comptime n: usize) usize {
     return n * 2;
 }
 
-/// Checks `sig_hex` (128 hex characters, whitespace around it ignored) is a
-/// valid signature of exactly `message` by `pubkey_hex` (64 hex characters).
 pub fn verifySignature(message: []const u8, sig_hex: []const u8, pubkey_hex: []const u8) Error!void {
     const key_text = std.mem.trim(u8, pubkey_hex, " \t\r\n");
     if (key_text.len == 0) return error.NoSigningKey;
@@ -43,8 +32,6 @@ pub fn verifySignature(message: []const u8, sig_hex: []const u8, pubkey_hex: []c
     sig.verifyStrict(message, pk) catch return error.SignatureMismatch;
 }
 
-/// The hash `SHA256SUMS` lists for `filename`, in `sha256sum` format:
-/// `<64 hex>  ./name` or `<64 hex> *name`.
 pub fn hashFor(sums: []const u8, filename: []const u8) Error![Sha256.digest_length]u8 {
     var lines = std.mem.splitScalar(u8, sums, '\n');
     while (lines.next()) |raw| {
@@ -66,18 +53,15 @@ pub fn hashFor(sums: []const u8, filename: []const u8) Error![Sha256.digest_leng
 pub fn checkHash(data: []const u8, expected: [Sha256.digest_length]u8) Error!void {
     var got: [Sha256.digest_length]u8 = undefined;
     Sha256.hash(data, &got, .{});
-    // Not secret, but constant time costs nothing and removes a question.
     if (!std.crypto.timing_safe.eql([Sha256.digest_length]u8, got, expected)) return error.ChecksumMismatch;
 }
 
-/// Full check of a downloaded tarball against a signed sums file.
+// signature first. a checksum sitting next to the file only catches corruption
 pub fn verifyDownload(sums: []const u8, sig_hex: []const u8, pubkey_hex: []const u8, filename: []const u8, data: []const u8) Error!void {
     try verifySignature(sums, sig_hex, pubkey_hex);
     const want = try hashFor(sums, filename);
     try checkHash(data, want);
 }
-
-// ---------------------------------------------------------------- tests
 
 fn testKey(seed_byte: u8) !Ed25519.KeyPair {
     const seed: [Ed25519.KeyPair.seed_length]u8 = @splat(seed_byte);
@@ -101,23 +85,19 @@ test "a good signature verifies, anything else does not" {
     const key_hex = hexOf(&kp.public_key.toBytes(), &key_buf);
 
     try verifySignature(sums_fixture, sig_hex, key_hex);
-    // surrounding whitespace in the .sig file is fine
     var padded: [140]u8 = undefined;
     const p = try std.fmt.bufPrint(&padded, "  {s}\r\n", .{sig_hex});
     try verifySignature(sums_fixture, p, key_hex);
 
-    // one changed byte in the signed text
     var tampered: [sums_fixture.len]u8 = undefined;
     @memcpy(&tampered, sums_fixture);
     tampered[3] ^= 1;
     try std.testing.expectError(error.SignatureMismatch, verifySignature(&tampered, sig_hex, key_hex));
 
-    // someone else's key
     const other = try testKey(8);
     var other_buf: [64]u8 = undefined;
     try std.testing.expectError(error.SignatureMismatch, verifySignature(sums_fixture, sig_hex, hexOf(&other.public_key.toBytes(), &other_buf)));
 
-    // a signature from the wrong key over the right text
     const forged = try other.sign(sums_fixture, null);
     var forged_buf: [128]u8 = undefined;
     try std.testing.expectError(error.SignatureMismatch, verifySignature(sums_fixture, hexOf(&forged.toBytes(), &forged_buf), key_hex));
@@ -149,7 +129,6 @@ test "checksum lookup handles sha256sum formats" {
     _ = try hashFor("49b89824e18d15c2a47432cfc114a66611c46b148549e472301eaefe0202fcd2 *file.tgz\n", "file.tgz");
     _ = try hashFor("49b89824e18d15c2a47432cfc114a66611c46b148549e472301eaefe0202fcd2  file.tgz\r\n", "file.tgz");
     try std.testing.expectError(error.ChecksumMissing, hashFor(sums_fixture, "nodos-v1.0.0-riscv64-linux.tar.gz"));
-    // a name that merely contains the wanted one must not match
     try std.testing.expectError(error.ChecksumMissing, hashFor(sums_fixture, "x86_64-linux.tar.gz"));
     try std.testing.expectError(error.ChecksumMissing, hashFor("", "a"));
     try std.testing.expectError(error.ChecksumMissing, hashFor("not a hash line\n\n", "a"));
@@ -178,7 +157,6 @@ test "full download check: signature first, then hash" {
 
     try verifyDownload(sums, sig_hex, key_hex, "nodos-v2.0.0-x86_64-linux.tar.gz", data);
     try std.testing.expectError(error.ChecksumMismatch, verifyDownload(sums, sig_hex, key_hex, "nodos-v2.0.0-x86_64-linux.tar.gz", "swapped tarball"));
-    // an attacker who edits the sums to match their tarball breaks the signature
     var evil_buf: [128]u8 = undefined;
     var eh: [32]u8 = undefined;
     Sha256.hash("swapped tarball", &eh, .{});

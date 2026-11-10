@@ -1,15 +1,12 @@
-// Strip chart on a canvas. Fixed 300 slot window so the line grows in from the
-// right and never rescales horizontally when a new point arrives.
 export const CAPACITY = 300;
 
-const PAD_RIGHT = 70; // room for the widest axis label, "1.95 MB/s"
+const PAD_RIGHT = 70;
 const PAD_Y = 6;
 
 function css(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
 
-// 1, 2, 5 times a power of ten, at or above x. Gives round axis maxima.
 export function niceCeil(x) {
   if (x <= 0) return 1;
   const exp = Math.pow(10, Math.floor(Math.log10(x)));
@@ -19,11 +16,6 @@ export function niceCeil(x) {
 }
 
 export class StripChart {
-  /**
-   * @param {HTMLElement} el container with fixed height
-   * @param {{series: {color: string}[], max?: number, minMax?: number, label: (v:number)=>string}} opts
-   *   `max` pins the top of the axis (percentages). Without it the axis follows the data.
-   */
   constructor(el, opts) {
     this.opts = opts;
     this.data = opts.series.map(() => []);
@@ -64,7 +56,6 @@ export class StripChart {
     const plotH = h - PAD_Y * 2;
     const y = (v) => PAD_Y + plotH - (Math.min(v, max) / max) * plotH;
 
-    // grid: top, middle, bottom
     ctx.font = "11px " + getComputedStyle(document.body).fontFamily;
     ctx.textBaseline = "middle";
     ctx.textAlign = "left";
@@ -96,7 +87,6 @@ export class StripChart {
       ctx.lineWidth = 1.6;
       ctx.lineJoin = "round";
       ctx.stroke();
-      // soft fill under the first series only, so two lines stay readable
       if (si === 0) {
         ctx.lineTo(plotW, PAD_Y + plotH);
         ctx.lineTo(x0, PAD_Y + plotH);

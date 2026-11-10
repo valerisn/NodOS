@@ -1,5 +1,3 @@
-// Number formatting. Binary units (1024) for bytes because that is what df and
-// free show, and a dashboard that disagrees with them looks broken.
 const UNITS = ["B", "KB", "MB", "GB", "TB", "PB"];
 
 export function bytes(n) {
@@ -42,7 +40,6 @@ export function duration(seconds) {
   return `${m}m`;
 }
 
-// green, amber, red thresholds for storage and per-core bars
 export function level(pct) {
   if (pct >= 90) return "crit";
   if (pct >= 75) return "warn";

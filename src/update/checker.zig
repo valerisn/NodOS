@@ -1,10 +1,3 @@
-//! "Is there a newer NodOS?" for the running server.
-//!
-//! This only ever tells. It fetches the release metadata, compares versions,
-//! and remembers the answer for the dashboard. It does not download a binary,
-//! does not touch the filesystem and could not install anything if it wanted
-//! to, because the server runs as an unprivileged user. Installing is
-//! `sudo nodos update`, a separate command a person runs.
 const std = @import("std");
 const Io = std.Io;
 const Str = @import("../agent/collect.zig").Str;
@@ -16,9 +9,7 @@ const build_options = @import("build_options");
 const log = std.log.scoped(.update);
 
 pub const Info = struct {
-    /// Unix seconds of the last time the release server answered. 0 = never.
     checked_s: i64 = 0,
-    /// The last attempt failed (offline, blocked, bad answer).
     failed: bool = false,
     available: bool = false,
     latest: Str(40) = .{},
@@ -26,8 +17,6 @@ pub const Info = struct {
     published_s: i64 = 0,
 };
 
-/// What the metadata says relative to the version we are running. Pure, so
-/// every comparison rule is tested. Prereleases are never offered.
 pub fn evaluate(arena: std.mem.Allocator, current_text: []const u8, json: []const u8, now_s: i64) Info {
     const current = Version.parse(current_text) catch return .{ .checked_s = now_s, .failed = true };
     const r = release.parse(arena, json) catch return .{ .checked_s = now_s, .failed = true };
@@ -43,7 +32,6 @@ pub fn evaluate(arena: std.mem.Allocator, current_text: []const u8, json: []cons
 pub const Checker = struct {
     mutex: Io.Mutex = .init,
     info: Info = .{},
-    /// So we log "update available" once per version, not every twelve hours.
     announced: Str(40) = .{},
 
     pub const first_delay_s = 30;
@@ -58,7 +46,7 @@ pub const Checker = struct {
     fn store(c: *Checker, io: Io, info: Info) void {
         c.mutex.lockUncancelable(io);
         defer c.mutex.unlock(io);
-        // A failed attempt must not wipe out a good earlier answer.
+        // a failed check shouldn't wipe a good earlier answer
         if (info.failed) {
             c.info.failed = true;
             return;
@@ -70,14 +58,11 @@ pub const Checker = struct {
         }
     }
 
-    /// One check against `meta_url`, stored into the checker.
     pub fn checkOnce(c: *Checker, gpa: std.mem.Allocator, io: Io, meta_url: []const u8) void {
         var arena: std.heap.ArenaAllocator = .init(gpa);
         defer arena.deinit();
         const now_s = Io.Timestamp.now(io, .real).toSeconds();
         const body = fetch.getOk(arena.allocator(), io, meta_url, 256 * 1024, 20_000) catch |err| {
-            // Not being able to reach GitHub is normal for a home server, so
-            // this is quiet unless someone turns on debug logging.
             log.debug("update check failed: {s}", .{@errorName(err)});
             c.store(io, .{ .checked_s = now_s, .failed = true });
             return;
@@ -85,7 +70,6 @@ pub const Checker = struct {
         c.store(io, evaluate(arena.allocator(), build_options.version, body, now_s));
     }
 
-    /// Runs until cancelled. `meta_url` is already validated.
     pub fn run(c: *Checker, gpa: std.mem.Allocator, io: Io, meta_url: []const u8) Io.Cancelable!void {
         try io.sleep(.fromSeconds(first_delay_s), .awake);
         while (true) {
@@ -117,8 +101,6 @@ pub fn writeJson(w: *Io.Writer, enabled: bool, info: Info) Io.Writer.Error!void 
     try j.endObject();
 }
 
-// ---------------------------------------------------------------- tests
-
 fn meta(comptime tag: []const u8, comptime extra: []const u8) []const u8 {
     return "{\"tag_name\":\"" ++ tag ++ "\",\"draft\":false," ++ extra ++ "\"published_at\":\"2026-11-09T05:00:01Z\",\"html_url\":\"https://example.test/rel\"}";
 }
@@ -142,7 +124,6 @@ test "same, older, and prerelease versions are not offered" {
     try std.testing.expect(!evaluate(a, "0.3.0", meta("v0.2.0", ""), 1).available);
     try std.testing.expect(!evaluate(a, "0.1.0", meta("v0.2.0", "\"prerelease\":true,"), 1).available);
     try std.testing.expect(!evaluate(a, "0.1.0", meta("v0.2.0-rc.1", ""), 1).available);
-    // a development build is older than the release of the same number
     try std.testing.expect(evaluate(a, "0.1.0-dev", meta("v0.1.0", ""), 1).available);
 }
 

@@ -1,7 +1,3 @@
-//! What a release looks like to the updater: the metadata GitHub (or a mirror)
-//! returns for "latest", the names of the files we expect, and where to find
-//! them. The metadata is untrusted input until the signature check passes, so
-//! nothing here is believed beyond choosing which version to look at.
 const std = @import("std");
 const builtin = @import("builtin");
 const Version = @import("version.zig").Version;
@@ -10,9 +6,7 @@ pub const default_owner = "valerisn";
 pub const default_repo = "NodOS";
 
 pub const Source = struct {
-    /// URL that returns the latest release as JSON.
     meta_url: []const u8,
-    /// Files live at `{assets_url}/{tag}/{file}`.
     assets_url: []const u8,
 
     pub const github: Source = .{
@@ -20,8 +14,6 @@ pub const Source = struct {
         .assets_url = "https://github.com/" ++ default_owner ++ "/" ++ default_repo ++ "/releases/download",
     };
 
-    /// A mirror is a directory served over HTTP(S) holding `latest.json` and a
-    /// `download/<tag>/` tree. Handy for air-gapped networks and for tests.
     pub fn mirror(arena: std.mem.Allocator, base: []const u8) !Source {
         const trimmed = std.mem.trimEnd(u8, base, "/");
         return .{
@@ -35,7 +27,6 @@ pub const Release = struct {
     tag: []const u8,
     version: Version,
     prerelease: bool,
-    /// Unix seconds, 0 when the metadata had no usable date.
     published_s: i64,
     page_url: []const u8,
 };
@@ -50,7 +41,6 @@ const Raw = struct {
 
 pub const ParseError = error{ BadMetadata, Draft, OutOfMemory };
 
-/// Strings are copied into `arena`.
 pub fn parse(arena: std.mem.Allocator, json: []const u8) ParseError!Release {
     const raw = std.json.parseFromSliceLeaky(Raw, arena, json, .{ .ignore_unknown_fields = true }) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
@@ -58,8 +48,6 @@ pub fn parse(arena: std.mem.Allocator, json: []const u8) ParseError!Release {
     };
     if (raw.draft) return error.Draft;
     const v = Version.parse(raw.tag_name) catch return error.BadMetadata;
-    // The tag becomes part of a URL path, so it must be exactly "v" plus a
-    // plain version: nothing that could climb out of the download directory.
     if (!validTag(raw.tag_name)) return error.BadMetadata;
     return .{
         .tag = try arena.dupe(u8, raw.tag_name),
@@ -91,7 +79,6 @@ pub const Arch = enum {
     }
 };
 
-/// `nodos-v0.1.0-x86_64-linux.tar.gz`, matching what the release workflow builds.
 pub fn tarballName(arena: std.mem.Allocator, tag: []const u8, arch: Arch) ![]const u8 {
     return std.fmt.allocPrint(arena, "nodos-{s}-{s}-linux.tar.gz", .{ tag, @tagName(arch) });
 }
@@ -100,7 +87,6 @@ pub fn assetUrl(arena: std.mem.Allocator, src: Source, tag: []const u8, file: []
     return std.fmt.allocPrint(arena, "{s}/{s}/{s}", .{ src.assets_url, tag, file });
 }
 
-/// "2026-11-09T05:00:01Z" to Unix seconds. Only the form GitHub emits.
 pub fn parseTimestamp(s: []const u8) ?i64 {
     if (s.len != 20 or s[4] != '-' or s[7] != '-' or s[10] != 'T' or s[13] != ':' or s[16] != ':' or s[19] != 'Z') return null;
     const y = std.fmt.parseInt(i64, s[0..4], 10) catch return null;
@@ -113,7 +99,6 @@ pub fn parseTimestamp(s: []const u8) ?i64 {
     return daysFromCivil(y, mo, d) * 86400 + h * 3600 + mi * 60 + se;
 }
 
-/// Days since 1970-01-01 for a proleptic Gregorian date (Hinnant's algorithm).
 fn daysFromCivil(y_in: i64, m: i64, d: i64) i64 {
     const y = if (m <= 2) y_in - 1 else y_in;
     const era = @divFloor(y, 400);
@@ -124,16 +109,11 @@ fn daysFromCivil(y_in: i64, m: i64, d: i64) i64 {
     return era * 146097 + doe - 719468;
 }
 
-/// Whether a release is old enough for unattended installation. A new release
-/// has to survive `soak_s` seconds in public first, which is the window in
-/// which a broken one gets noticed and pulled. An unknown date never passes.
 pub fn oldEnough(r: Release, now_s: i64, soak_s: i64) bool {
     if (r.published_s == 0) return false;
     return now_s - r.published_s >= soak_s;
 }
 
-/// Http is only acceptable to a machine talking to itself. Everything else
-/// must be https, so a network attacker can't feed us a different "latest".
 pub fn urlAllowed(url: []const u8) bool {
     if (std.mem.startsWith(u8, url, "https://")) return true;
     const rest = if (std.mem.startsWith(u8, url, "http://")) url["http://".len..] else return false;
@@ -142,8 +122,6 @@ pub fn urlAllowed(url: []const u8) bool {
     if (rest.len > host_end and rest[0] == '[') return false;
     return std.mem.eql(u8, host, "127.0.0.1") or std.mem.eql(u8, host, "localhost");
 }
-
-// ---------------------------------------------------------------- tests
 
 const github_fixture =
     \\{"url":"https://api.github.com/x","tag_name":"v0.2.0","name":"0.2.0","draft":false,
@@ -171,11 +149,9 @@ test "bad or hostile metadata is rejected" {
     try std.testing.expectError(error.BadMetadata, parse(a, "{}"));
     try std.testing.expectError(error.BadMetadata, parse(a, "{\"tag_name\":\"latest\"}"));
     try std.testing.expectError(error.Draft, parse(a, "{\"tag_name\":\"v1.0.0\",\"draft\":true}"));
-    // a tag that tries to leave the download directory
     try std.testing.expectError(error.BadMetadata, parse(a, "{\"tag_name\":\"v1.0.0/../../evil\"}"));
     try std.testing.expectError(error.BadMetadata, parse(a, "{\"tag_name\":\"v1.0.0?x=1\"}"));
     try std.testing.expectError(error.BadMetadata, parse(a, "{\"tag_name\":\"v1.0.0 \"}"));
-    // a version-looking tag that isn't one
     try std.testing.expectError(error.BadMetadata, parse(a, "{\"tag_name\":\"v1.2\"}"));
 }
 
@@ -190,7 +166,7 @@ test "prerelease flag or a prerelease tag both count" {
 
 test "timestamps" {
     try std.testing.expectEqual(@as(?i64, 0), parseTimestamp("1970-01-01T00:00:00Z"));
-    try std.testing.expectEqual(@as(?i64, 951782400), parseTimestamp("2000-02-29T00:00:00Z")); // leap day
+    try std.testing.expectEqual(@as(?i64, 951782400), parseTimestamp("2000-02-29T00:00:00Z"));
     try std.testing.expectEqual(@as(?i64, 1700000000), parseTimestamp("2023-11-14T22:13:20Z"));
     try std.testing.expectEqual(@as(?i64, null), parseTimestamp(""));
     try std.testing.expectEqual(@as(?i64, null), parseTimestamp("2026-13-01T00:00:00Z"));

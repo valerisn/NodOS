@@ -12,14 +12,6 @@ ExecStart=/usr/local/bin/nodos serve --config /etc/nodos/nodos.conf
 Restart=on-failure
 RestartSec=3
 
-# Docker and journal access are opt-in. Docker socket access is root-equivalent,
-# so don't add that group unless you want the Docker page:
-#   sudo systemctl edit nodos
-#   [Service]
-#   SupplementaryGroups=docker systemd-journal
-
-# Hardening. NodOS needs to read /proc and /sys, talk to a couple of sockets,
-# and write its own data directory. Nothing else.
 NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=/var/lib/nodos

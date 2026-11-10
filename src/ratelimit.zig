@@ -1,8 +1,3 @@
-//! Failed-login throttle. Fixed window per client key (the peer IP).
-//!
-//! Known weakness: behind a reverse proxy every client shares the proxy's
-//! address, so one attacker can lock out everyone. Needs a trusted
-//! X-Forwarded-For setting before we recommend proxy deployments.
 const std = @import("std");
 const Io = std.Io;
 
@@ -22,8 +17,6 @@ pub const Limiter = struct {
         l.map.deinit(gpa);
     }
 
-    /// False means the client is locked out and must not even be allowed to
-    /// try a password (so the lockout can't be used as a guessing oracle).
     pub fn allow(l: *Limiter, io: Io, key: Key, now_s: i64) bool {
         l.mutex.lockUncancelable(io);
         defer l.mutex.unlock(io);
@@ -36,8 +29,6 @@ pub const Limiter = struct {
         l.mutex.lockUncancelable(io);
         defer l.mutex.unlock(io);
         if (l.map.count() >= max_entries) l.evictStaleLocked(now_s);
-        // Full table of live entries: fail closed by dropping the record.
-        // That under-counts, but allocation failure here must not crash auth.
         const gop = l.map.getOrPut(gpa, key) catch return;
         if (!gop.found_existing or now_s - gop.value_ptr.window_start_s >= window_s) {
             gop.value_ptr.* = .{ .failures = 1, .window_start_s = now_s };

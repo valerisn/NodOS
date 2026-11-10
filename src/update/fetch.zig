@@ -1,22 +1,13 @@
-//! One-shot HTTP(S) GET into memory, with a size cap and a deadline.
-//!
-//! This is the only code in NodOS that talks to the internet. It is used by
-//! the update check and the updater, nothing else, and it sends nothing about
-//! the machine: a User-Agent of "nodos/<version>" and the request itself.
-//!
-//! Anything it returns is untrusted until `verify.zig` has checked a signature.
 const std = @import("std");
 const Io = std.Io;
 const release = @import("release.zig");
 const version = @import("build_options").version;
 
 pub const Error = error{
-    /// URL is not https (or http to this machine).
     UrlNotAllowed,
     Unreachable,
     TimedOut,
     TooLarge,
-    /// The server answered, with something other than 200.
     BadStatus,
     OutOfMemory,
 };
@@ -26,17 +17,11 @@ pub const Fetched = struct {
     body: []u8,
 };
 
-/// `arena` owns the body. `max_bytes` is a hard cap: a server that keeps
-/// sending gets cut off instead of filling memory.
 pub fn get(arena: std.mem.Allocator, io: Io, url: []const u8, max_bytes: usize, timeout_ms: u32) Error!Fetched {
     if (!release.urlAllowed(url)) return error.UrlNotAllowed;
     return getAny(arena, io, url, max_bytes, timeout_ms);
 }
 
-/// Same as `get` without the https-or-loopback rule. Only for probing our own
-/// server after a restart, where the address comes from our own config file
-/// and may be a LAN address over plain http. Never use it on a URL that came
-/// from the network.
 pub fn getAny(arena: std.mem.Allocator, io: Io, url: []const u8, max_bytes: usize, timeout_ms: u32) Error!Fetched {
     const Race = union(enum) {
         reply: Error!Fetched,
@@ -65,7 +50,6 @@ fn sleepMs(io: Io, ms: u32) Io.Cancelable!void {
 }
 
 fn exchange(arena: std.mem.Allocator, io: Io, url: []const u8, max_bytes: usize) Error!Fetched {
-    // The buffer is the cap: writing past it fails, which we report as TooLarge.
     const buf = try arena.alloc(u8, max_bytes);
     var w: Io.Writer = .fixed(buf);
 
@@ -90,14 +74,11 @@ fn exchange(arena: std.mem.Allocator, io: Io, url: []const u8, max_bytes: usize)
     return .{ .status = code, .body = w.buffered() };
 }
 
-/// GET that treats anything but 200 as an error.
 pub fn getOk(arena: std.mem.Allocator, io: Io, url: []const u8, max_bytes: usize, timeout_ms: u32) Error![]u8 {
     const r = try get(arena, io, url, max_bytes, timeout_ms);
     if (r.status != 200) return error.BadStatus;
     return r.body;
 }
-
-// ---------------------------------------------------------------- tests
 
 fn tinyServer(io: Io, server: *Io.net.Server, response: []const u8, hang: bool) Io.Cancelable!void {
     const stream = server.accept(io) catch return;
@@ -118,7 +99,6 @@ fn tinyServer(io: Io, server: *Io.net.Server, response: []const u8, hang: bool) 
 fn listenLocal(io: Io) !struct { server: Io.net.Server, port: u16 } {
     var bytes: [2]u8 = undefined;
     io.random(&bytes);
-    // Pick from the dynamic range and retry on collision.
     var attempt: u16 = 0;
     while (attempt < 20) : (attempt += 1) {
         const port: u16 = 20000 + (std.mem.readInt(u16, &bytes, .little) +% attempt *% 7919) % 30000;

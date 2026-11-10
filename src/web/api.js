@@ -1,5 +1,3 @@
-// Thin fetch wrapper. The CSRF token lives in memory only: a page reload
-// re-fetches it from /me, so it never touches storage.
 let csrf = "";
 
 export function setCsrf(token) {
@@ -20,7 +18,7 @@ export async function request(method, path, body) {
   try {
     data = await res.json();
   } catch {
-    // Empty or non-JSON body; the status code still tells the story.
+    // body can be empty or not json, the status code still tells the story
   }
   if (!res.ok) {
     const err = new Error((data && data.error) || res.statusText);

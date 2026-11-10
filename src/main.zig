@@ -23,8 +23,6 @@ const usage =
     \\
 ;
 
-// Filter at runtime so the config file can set the level. The journal adds
-// timestamps when we run under systemd, so we don't bother with our own.
 var runtime_level: std.atomic.Value(u8) = .init(@backingInt(std.log.Level.info));
 
 pub const std_options: std.Options = .{
@@ -99,8 +97,6 @@ fn serve(init: std.process.Init, cmd: nodos.cli.Parsed) !void {
     };
 }
 
-/// Password comes from stdin, never argv: argv shows up in `ps` and shell
-/// history. Returns a PHC hash in `hash_buf`.
 fn readPasswordHash(init: std.process.Init, hash_buf: *[nodos.auth.hash_buf_len]u8) []const u8 {
     var in_buf: [512]u8 = undefined;
     var stdin: Io.File.Reader = .init(.stdin(), init.io, &in_buf);
@@ -114,7 +110,6 @@ fn readPasswordHash(init: std.process.Init, hash_buf: *[nodos.auth.hash_buf_len]
     };
 }
 
-/// All the `nodos user ...` commands: load users.db, change it, write it back.
 fn userCommand(init: std.process.Init, cmd: nodos.cli.Parsed, w: *Io.Writer) !void {
     const io = init.io;
     const arena = init.arena.allocator();
@@ -142,7 +137,6 @@ fn userCommand(init: std.process.Init, cmd: nodos.cli.Parsed, w: *Io.Writer) !vo
             try w.print("created {s} user '{s}'\n", .{ @tagName(user.role), user.name });
         },
         .user_passwd => {
-            // Check the user exists before asking for anything.
             if (users.find(cmd.user_name.?) == null) fatal("no such user '{s}'", .{cmd.user_name.?});
             var hash_buf: [nodos.auth.hash_buf_len]u8 = undefined;
             const phc = readPasswordHash(init, &hash_buf);
@@ -160,7 +154,6 @@ fn userCommand(init: std.process.Init, cmd: nodos.cli.Parsed, w: *Io.Writer) !vo
         else => unreachable,
     }
     nodos.users.save(io, dir, &users) catch |err| fatal("cannot save users: {s}", .{@errorName(err)});
-    // The running server keeps its own copy, loaded at start.
     try w.writeAll("restart nodos for this to take effect on a running server\n");
 }
 
@@ -180,8 +173,6 @@ fn toLogLevel(l: nodos.config.LogLevel) std.log.Level {
     };
 }
 
-/// Exits the process on any problem. Starting with a half-read config is
-/// worse than not starting.
 fn loadConfig(io: Io, arena: std.mem.Allocator, path: ?[]const u8) nodos.config.Config {
     const p = path orelse return .{};
     const text = Io.Dir.cwd().readFileAlloc(io, p, arena, .limited(64 * 1024)) catch |err|

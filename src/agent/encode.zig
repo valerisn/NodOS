@@ -1,5 +1,3 @@
-//! JSON for Snapshot and history. Hand-shaped (not reflected) so the wire
-//! format is a deliberate API, not an accident of struct layout.
 const std = @import("std");
 const Io = std.Io;
 const Stringify = std.json.Stringify;
@@ -8,7 +6,6 @@ const sampler = @import("sampler.zig");
 
 const Error = Io.Writer.Error;
 
-/// One decimal is plenty for a percentage and keeps payloads small.
 fn r1(x: f32) f64 {
     return @round(@as(f64, x) * 10.0) / 10.0;
 }
@@ -118,7 +115,6 @@ pub fn writeSnapshot(w: *Io.Writer, s: *const collect.Snapshot) Error!void {
     try j.endObject();
 }
 
-/// Column-oriented so a 300 point series stays small: one array per metric.
 pub fn writeHistory(w: *Io.Writer, points: []const sampler.Point) Error!void {
     var j: Stringify = .{ .writer = w };
     try j.beginObject();

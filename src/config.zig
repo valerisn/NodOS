@@ -1,6 +1,3 @@
-//! Config file parsing. Format is `key = value`, `#` starts a comment.
-//! Not TOML and not ZON on purpose: nobody should need a spec to edit a
-//! five line file, and the error messages here carry the line number.
 const std = @import("std");
 const systemd = @import("integrations/systemd.zig");
 const release = @import("update/release.zig");
@@ -8,35 +5,17 @@ const release = @import("update/release.zig");
 pub const LogLevel = enum { err, warn, info, debug };
 
 pub const Config = struct {
-    /// Loopback by default. Binding wider is an explicit choice by the admin.
     listen: []const u8 = "127.0.0.1",
     port: u16 = 8080,
     data_dir: []const u8 = "/var/lib/nodos",
     log_level: LogLevel = .info,
-    /// Browsers drop Secure cookies on plain HTTP (localhost excepted). Turn
-    /// this off only for a trusted-LAN setup without TLS.
     secure_cookies: bool = true,
-    /// Docker Engine socket, or "off". Socket access is root-equivalent, so
-    /// an admin who doesn't want NodOS to hold that power can switch it off.
     docker_socket: []const u8 = "/var/run/docker.sock",
-    /// Address of a reverse proxy whose X-Forwarded-For header we believe.
-    /// Empty (the default) means we trust no one, and the header is ignored.
-    /// Only ever set this to a proxy you run: anyone else can forge the header
-    /// and dodge the login throttle.
     trusted_proxy: []const u8 = "",
-    /// systemd units NodOS may show and control, without ".service". Empty
-    /// means the services feature is off. An allowlist, never a pattern.
     services: []const []const u8 = &.{},
-    /// Look for new NodOS releases once in a while and show a notice in the
-    /// dashboard. The only outbound connection NodOS makes: one HTTPS request
-    /// to the release server every twelve hours, carrying nothing but a
-    /// "nodos/<version>" User-Agent. Nothing is ever installed by this.
+    // the only outbound connection nodos makes: a User-Agent and nothing else
     update_check: bool = true,
-    /// Where releases come from, instead of GitHub. A directory served over
-    /// https (or over http on this machine) holding latest.json and a
-    /// download/<tag>/ tree. For private mirrors and tests.
     update_mirror: []const u8 = "",
-    /// How often the sampler runs. Below 500 ms the CPU cost stops being funny.
     sample_interval_ms: u32 = 2000,
 };
 
@@ -47,8 +26,6 @@ pub const Diagnostic = struct {
 
 pub const ParseError = error{ InvalidConfig, OutOfMemory };
 
-/// Strings in the result are duped into `arena`. On InvalidConfig, `diag`
-/// says which line and why.
 pub fn parse(arena: std.mem.Allocator, text: []const u8, diag: *Diagnostic) ParseError!Config {
     var cfg: Config = .{};
     var line_no: usize = 0;
@@ -65,7 +42,6 @@ pub fn parse(arena: std.mem.Allocator, text: []const u8, diag: *Diagnostic) Pars
         if (value.len == 0) return fail(diag, line_no, "empty value");
 
         if (std.mem.eql(u8, key, "listen")) {
-            // Validate now so a typo fails at startup, not at bind time.
             _ = std.Io.net.IpAddress.parse(value, 0) catch
                 return fail(diag, line_no, "listen is not a valid IP address");
             cfg.listen = try arena.dupe(u8, value);

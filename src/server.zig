@@ -1,6 +1,3 @@
-//! HTTP front door. Built on std.http.Server over std.Io streams, one task
-//! per connection. Request handling is `dispatch`, a function of plain values,
-//! so the auth flow is testable without opening a socket.
 const std = @import("std");
 const builtin = @import("builtin");
 const Io = std.Io;
@@ -23,11 +20,8 @@ const version = @import("build_options").version;
 
 const log = std.log.scoped(.server);
 
-/// Hard cap on simultaneous connections. A home box does not need more, and
-/// every connection costs a task plus 16 KB of buffers.
 const max_connections = 256;
 
-/// API bodies are tiny JSON. Anything bigger is a mistake or an attack.
 const max_body = 1024;
 
 const cookie_name = "nodos_session";
@@ -43,15 +37,9 @@ pub const App = struct {
     streams: std.atomic.Value(u32) = .init(0),
     alerts: alerts_mod.Engine = .{},
     updates: update_checker.Checker = .{},
-    /// Null when the admin set `docker_socket = off`.
     docker: ?docker.Client = null,
-    /// Null when the config lists no services.
     systemd: ?systemd.Client = null,
-    /// Null in tests.
     audit_log: ?audit.Log = null,
-    /// A real hash of a throwaway password, verified against when the
-    /// username doesn't exist, so "no such user" costs the same time as
-    /// "wrong password" and can't be used to enumerate accounts.
     dummy_phc: [auth.hash_buf_len]u8 = undefined,
     dummy_len: usize = 0,
 
@@ -65,7 +53,6 @@ pub const App = struct {
         }
         var pw: [24]u8 = undefined;
         try io.randomSecure(&pw);
-        // hashPassword wants printable-length input; raw bytes are fine for argon2.
         const phc = try auth.hashPassword(gpa, io, &pw, &app.dummy_phc);
         app.dummy_len = phc.len;
         return app;
@@ -81,8 +68,6 @@ pub const App = struct {
         app.recordTarget(io, now_s, actor, action, "", ok, ip);
     }
 
-    /// Sampler hook: run the alert rules and write what changed to the audit
-    /// log and the process log. Actor is "system" because no person did this.
     pub fn onSample(ctx: *anyopaque, io: Io, snap: *const @import("agent/collect.zig").Snapshot) void {
         const app: *App = @ptrCast(@alignCast(ctx));
         var events: [alerts_mod.max_alerts]alerts_mod.Event = undefined;
@@ -113,12 +98,9 @@ pub const Reply = struct {
     set_cookie: ?[]const u8 = null,
 };
 
-/// Everything dispatch needs from the request, copied out before the body
-/// reader invalidates the header strings.
 pub const Ctx = struct {
     method: http.Method,
     path: []const u8,
-    /// Raw query string without the '?', capped at 64 bytes.
     query: []const u8 = "",
     cookie_token: ?[43]u8 = null,
     csrf: ?[43]u8 = null,
@@ -127,11 +109,9 @@ pub const Ctx = struct {
     now_s: i64,
 };
 
-/// Per-request scratch the Reply may point into.
 pub const Scratch = struct {
     body: [512]u8 = undefined,
     cookie: [192]u8 = undefined,
-    /// Worst case snapshot (128 cores, 16 interfaces, 32 mounts) is ~20 KB of JSON.
     big: [32 * 1024]u8 = undefined,
 };
 
@@ -179,7 +159,6 @@ pub fn dispatch(app: *App, io: Io, ctx: Ctx, body: []const u8, s: *Scratch) Repl
     if (std.mem.eql(u8, ctx.path, "/api/v1/audit")) {
         if (!get) return err_method;
         const sess = currentSession(app, io, ctx) orelse return err_unauth;
-        // Who did what is not for viewers.
         if (sess.role != .admin) return err_forbidden;
         const log_file = if (app.audit_log) |*l| l else return err_unavailable;
         const limit = std.math.clamp(queryInt(ctx.query, "limit") orelse 100, 1, 200);
@@ -240,7 +219,6 @@ fn dockerFailure(err: anyerror) Reply {
     };
 }
 
-/// `name=value` out of a query string, as an integer.
 fn queryInt(query: []const u8, name: []const u8) ?usize {
     var it = std.mem.splitScalar(u8, query, '&');
     while (it.next()) |pair| {
@@ -250,9 +228,6 @@ fn queryInt(query: []const u8, name: []const u8) ?usize {
     return null;
 }
 
-/// Everything under /api/v1/docker/. Reading the container list is open to any
-/// signed-in user. Logs can contain secrets and actions change the host, so
-/// both are admin only, and actions also need the CSRF token and an audit line.
 fn dockerRoute(app: *App, io: Io, ctx: Ctx, s: *Scratch) Reply {
     const sess = currentSession(app, io, ctx) orelse return err_unauth;
     const client = app.docker orelse return err_docker_off;
@@ -322,10 +297,6 @@ fn serviceFailure(err: anyerror) Reply {
     };
 }
 
-/// /api/v1/services and /api/v1/services/{unit}/{logs|start|stop|restart}.
-/// Same rules as Docker: anyone signed in may look, admins read logs and act,
-/// actions need the CSRF token and are audited. On top of that, a unit must be
-/// on the config allowlist, so a typo or an attack can't reach any other unit.
 fn serviceRoute(app: *App, io: Io, ctx: Ctx, s: *Scratch) Reply {
     const sess = currentSession(app, io, ctx) orelse return err_unauth;
     const client = app.systemd orelse return err_svc_off;
@@ -378,8 +349,6 @@ fn serviceRoute(app: *App, io: Io, ctx: Ctx, s: *Scratch) Reply {
         },
         .refused => |msg| {
             app.recordTarget(io, ctx.now_s, userName(app, sess), action_name, unit, false, ctx.ip_text);
-            // systemd's own words, JSON-escaped, so the admin sees "interactive
-            // authentication required" and knows it is a polkit question.
             var msg_buf: [256]u8 = undefined;
             const text = std.fmt.bufPrint(&msg_buf, "systemd refused: {s}", .{msg}) catch "systemd refused the request";
             var w: Io.Writer = .fixed(&s.body);
@@ -410,8 +379,6 @@ fn login(app: *App, io: Io, ctx: Ctx, body: []const u8, s: *Scratch) Reply {
 
     if (!matched or user == null) {
         app.limiter.recordFailure(app.gpa, io, ctx.client, ctx.now_s);
-        // Log what was typed only if it is a legal username; otherwise a
-        // password pasted into the username box would land in the audit log.
         const who = if (users_mod.validName(creds.username)) creds.username else "-";
         app.record(io, ctx.now_s, who, "auth.login", false, ctx.ip_text);
         return .{ .status = .unauthorized, .body = "{\"error\":\"invalid credentials\"}" };
@@ -450,13 +417,11 @@ fn csrfOk(sess: auth.Session, ctx: Ctx) bool {
     return auth.SessionStore.csrfMatches(sess, &presented);
 }
 
-/// Strict, HttpOnly, and Secure unless the admin opted out for plain-HTTP LANs.
 fn cookie(app: *App, s: *Scratch, token: []const u8, max_age: i64) ?[]const u8 {
     const secure = if (app.cfg.secure_cookies) "; Secure" else "";
     return std.fmt.bufPrint(&s.cookie, "{s}={s}; HttpOnly; SameSite=Strict; Path=/; Max-Age={d}{s}", .{ cookie_name, token, max_age, secure }) catch null;
 }
 
-/// Finds `name` in a Cookie header value. Exact name match only.
 pub fn cookieValue(header: []const u8, name: []const u8) ?[]const u8 {
     var it = std.mem.splitSequence(u8, header, ";");
     while (it.next()) |part| {
@@ -467,8 +432,6 @@ pub fn cookieValue(header: []const u8, name: []const u8) ?[]const u8 {
     return null;
 }
 
-/// "1.2.3.4:5555" -> "1.2.3.4", "[::1]:5555" -> "::1". The audit log wants
-/// the address, not the client's ephemeral port.
 fn stripPort(s: []const u8) []const u8 {
     if (s.len > 0 and s[0] == '[') {
         const end = std.mem.findScalar(u8, s, ']') orelse return s;
@@ -484,19 +447,14 @@ test "stripPort" {
     try std.testing.expectEqualStrings("?", stripPort("?"));
 }
 
-/// The client address a trusted proxy reports: the rightmost X-Forwarded-For
-/// entry, because that is the one our own proxy appended. Earlier entries came
-/// from the client and can say anything.
 pub fn rightmostForwarded(xff: []const u8) ?Io.net.IpAddress {
     const comma = std.mem.findScalarLast(u8, xff, ',');
     const last = std.mem.trim(u8, if (comma) |c| xff[c + 1 ..] else xff, " \t");
     if (last.len == 0) return null;
-    // IPv6 may arrive bracketed; strip a port-less bracket pair.
     const bare = if (last.len > 2 and last[0] == '[' and last[last.len - 1] == ']') last[1 .. last.len - 1] else last;
     return Io.net.IpAddress.parse(bare, 0) catch null;
 }
 
-/// Same host, ignoring port.
 fn sameHost(a: Io.net.IpAddress, b: Io.net.IpAddress) bool {
     return switch (a) {
         .ip4 => |x| switch (b) {
@@ -518,7 +476,6 @@ test "forwarded address: rightmost wins, junk is ignored" {
     const a = rightmostForwarded("9.9.9.9, 203.0.113.7").?;
     try std.testing.expect(sameHost(a, try Io.net.IpAddress.parse("203.0.113.7", 0)));
     try std.testing.expect(rightmostForwarded("203.0.113.7").?.ip4.bytes[3] == 7);
-    // a client claiming to be someone else only controls the left side
     const spoof = rightmostForwarded("10.0.0.1, 198.51.100.4").?;
     try std.testing.expect(sameHost(spoof, try Io.net.IpAddress.parse("198.51.100.4", 0)));
     try std.testing.expect(rightmostForwarded("") == null);
@@ -545,8 +502,6 @@ fn clientKey(addr: Io.net.IpAddress) ratelimit.Key {
     return k;
 }
 
-// Sent on every response. The dashboard is same-origin only, so the CSP can
-// be strict from day one; loosening later is easy, tightening is not.
 const security_headers = [_]http.Header{
     .{ .name = "x-content-type-options", .value = "nosniff" },
     .{ .name = "x-frame-options", .value = "DENY" },
@@ -555,14 +510,8 @@ const security_headers = [_]http.Header{
     .{ .name = "content-security-policy", .value = "default-src 'self'; frame-ancestors 'none'" },
 };
 
-/// A connection that completes no request (and sends no complete head) for
-/// this long is cut. This is the slowloris defense: without it, 256 silent
-/// sockets would lock every real user out.
 const idle_limit_s = 15;
 
-/// One entry per allowed connection. The mutex exists so the reaper can never
-/// shut down a descriptor number that was already closed and handed to a new
-/// client: close and shutdown both happen under the slot lock.
 const Slot = struct {
     mutex: Io.Mutex = .init,
     in_use: bool = false,
@@ -587,6 +536,7 @@ const Pool = struct {
         return null;
     }
 
+    // close and shutdown share the slot lock, otherwise we could shut down an fd that was already handed to someone else
     fn release(_: *Pool, io: Io, s: *Slot) void {
         s.mutex.lockUncancelable(io);
         defer s.mutex.unlock(io);
@@ -602,8 +552,6 @@ const Pool = struct {
             if (s.in_use and now - s.last_s.load(.monotonic) >= idle_limit_s) {
                 log.debug("closing idle connection", .{});
                 s.stream.shutdown(io, .both) catch {};
-                // Push the deadline out so we don't shut it down every tick
-                // while the handler task is still unwinding.
                 s.last_s.store(now, .monotonic);
             }
         }
@@ -640,7 +588,6 @@ pub fn run(io: Io, app: *App) !void {
     defer group.cancel(io);
     try group.concurrent(io, reaper, .{ io, &pool });
     if (app.cfg.update_check) {
-        // Where to look: the admin's mirror if set, otherwise GitHub.
         const meta_url = if (app.cfg.update_mirror.len > 0)
             (update_release.Source.mirror(app.gpa, app.cfg.update_mirror) catch null)
         else
@@ -687,7 +634,6 @@ fn serveConnection(io: Io, app: *App, pool: *Pool, slot: *Slot, stream: Io.net.S
     const client = clientKey(stream.socket.address);
     var ip_buf: [64]u8 = undefined;
     const ip_text = formatHost(stream.socket.address, &ip_buf);
-    // Only a proxy named in the config gets to say who the client really is.
     const proxy_trusted = if (app.cfg.trusted_proxy.len > 0) blk: {
         const p = Io.net.IpAddress.parse(app.cfg.trusted_proxy, 0) catch break :blk false;
         break :blk sameHost(p, stream.socket.address);
@@ -695,7 +641,6 @@ fn serveConnection(io: Io, app: *App, pool: *Pool, slot: *Slot, stream: Io.net.S
 
     while (true) {
         var req = srv.receiveHead() catch |err| {
-            // Closed connections and garbage are routine, not worth a warning.
             log.debug("receiveHead: {s}", .{@errorName(err)});
             return;
         };
@@ -728,8 +673,6 @@ fn serveConnection(io: Io, app: *App, pool: *Pool, slot: *Slot, stream: Io.net.S
                 if (h.value.len == 43) ctx.csrf = h.value[0..43].*;
             }
         }
-        // ctx.path points into the head buffer, which dies when the body
-        // reader starts. Copy it before touching the body.
         var path_buf: [128]u8 = undefined;
         var query_buf: [64]u8 = undefined;
         if (ctx.path.len > path_buf.len) {
@@ -777,16 +720,9 @@ fn serveConnection(io: Io, app: *App, pool: *Pool, slot: *Slot, stream: Io.net.S
     }
 }
 
-/// Cap on simultaneous live streams so a pile of open dashboards can't eat
-/// the whole connection pool.
 const max_streams = 16;
 
-/// One step of the live stream: a snapshot event if the sampler produced a new
-/// one since `last_ts`, otherwise a comment line. The comment keeps proxies
-/// from timing the connection out and keeps our own idle reaper off it.
 fn streamTick(app: *App, io: Io, w: *Io.Writer, last_ts: *i64, last_alerts: *u32) !void {
-    // Alerts change rarely, so they get their own event and only when the set
-    // actually changed. The first tick always sends them (version starts at 1).
     const ver = app.alerts.currentVersion(io);
     if (ver != last_alerts.*) {
         last_alerts.* = ver;
@@ -808,9 +744,6 @@ fn streamTick(app: *App, io: Io, w: *Io.Writer, last_ts: *i64, last_alerts: *u32
     try w.writeAll(": ping\n\n");
 }
 
-/// Server-Sent Events. One-way push is all the dashboard needs (see D5 in the
-/// decision records). Ends when the client goes away, the session dies, or
-/// the server shuts down.
 fn serveStream(app: *App, io: Io, req: *http.Server.Request, ctx: Ctx, slot: *Slot) void {
     const sess_token = ctx.cookie_token orelse {
         respondSimple(req, err_unauth, false) catch {};
@@ -834,8 +767,6 @@ fn serveStream(app: *App, io: Io, req: *http.Server.Request, ctx: Ctx, slot: *Sl
     var hdrs: [security_headers.len + 1]http.Header = undefined;
     @memcpy(hdrs[0..security_headers.len], &security_headers);
     hdrs[security_headers.len] = .{ .name = "content-type", .value = "text/event-stream" };
-    // Sized for the largest snapshot (16 interfaces, 32 mounts) so a whole
-    // event always fits in the buffer and never has to drain mid-write.
     var out_buf: [24 * 1024]u8 = undefined;
     var bw = req.respondStreaming(&out_buf, .{
         .respond_options = .{ .extra_headers = &hdrs, .keep_alive = false },
@@ -846,12 +777,9 @@ fn serveStream(app: *App, io: Io, req: *http.Server.Request, ctx: Ctx, slot: *Sl
 
     var last_ts: i64 = 0;
     var last_alerts: u32 = 0;
-    // Tick faster than the idle limit even when sampling is slow.
     const tick_ms: i64 = @min(app.cfg.sample_interval_ms, 5000);
     while (true) {
         const now_s = Io.Timestamp.now(io, .real).toSeconds();
-        // Logout or expiry ends the stream. lookup also counts as activity,
-        // so an open dashboard keeps its session alive up to the 12 h cap.
         if (app.sessions.lookup(io, &sess_token, now_s) == null) {
             log.debug("stream: session ended", .{});
             return;
@@ -860,11 +788,7 @@ fn serveStream(app: *App, io: Io, req: *http.Server.Request, ctx: Ctx, slot: *Sl
             log.debug("stream: write failed: {s}", .{@errorName(err)});
             return;
         };
-        // Two flushes, in this order. bw.flush() alone only pushes the
-        // connection's buffer; our events sit in bw.writer's own buffer and
-        // never leave until it fills. That bug hid on a dev box where events
-        // were big enough to overflow a small buffer, and showed up as a
-        // silent stream on Linux CI.
+        // two flushes on purpose. bw.flush() only pushes the socket, events sat in bw.writer until its buffer filled
         bw.writer.flush() catch |err| {
             log.debug("stream: writer flush failed: {s}", .{@errorName(err)});
             return;
@@ -895,10 +819,7 @@ fn respondSimple(req: *http.Server.Request, reply: Reply, keep_alive: bool) !voi
     });
 }
 
-/// std.http.Server asserts (crashes the whole process) when a POST/PUT shows up
-/// with neither Content-Length nor Transfer-Encoding, found by smoke test on
-/// 0.17.0. Any client could kill the server, so we reject it ourselves first.
-/// Remove once upstream returns an error instead.
+// std asserts on a POST with no length and takes the whole process down. found that the hard way, so reject it first
 fn bodyFramingValid(method: http.Method, te: http.TransferEncoding, content_length: ?u64) bool {
     if (!method.requestHasBody()) return true;
     return te != .none or content_length != null;
@@ -950,14 +871,12 @@ test "login, me, csrf, logout" {
     defer app.deinit(io);
     var s: Scratch = .{};
 
-    // bad password and unknown user look identical
     const bad = dispatch(&app, io, testCtx(.POST, "/api/v1/login"), "{\"username\":\"alice\",\"password\":\"nope nope nope\"}", &s);
     try std.testing.expectEqual(http.Status.unauthorized, bad.status);
     const ghost = dispatch(&app, io, testCtx(.POST, "/api/v1/login"), "{\"username\":\"ghost\",\"password\":\"correct horse battery\"}", &s);
     try std.testing.expectEqualStrings(bad.body, ghost.body);
     try std.testing.expectEqual(http.Status.bad_request, dispatch(&app, io, testCtx(.POST, "/api/v1/login"), "not json", &s).status);
 
-    // good login
     const ok = dispatch(&app, io, testCtx(.POST, "/api/v1/login"), "{\"username\":\"alice\",\"password\":\"correct horse battery\"}", &s);
     try std.testing.expectEqual(http.Status.ok, ok.status);
     const set = ok.set_cookie.?;
@@ -966,7 +885,6 @@ test "login, me, csrf, logout" {
     try std.testing.expect(std.mem.find(u8, set, "Secure") != null);
     var token: [43]u8 = undefined;
     @memcpy(&token, set[cookie_name.len + 1 ..][0..43]);
-    // pull csrf out of the body json
     const Resp = struct { csrf: []const u8 };
     var fba_buf: [1024]u8 = undefined;
     var fba: std.heap.FixedBufferAllocator = .init(&fba_buf);
@@ -974,14 +892,12 @@ test "login, me, csrf, logout" {
     var csrf: [43]u8 = undefined;
     @memcpy(&csrf, parsed.csrf[0..43]);
 
-    // /me needs the cookie
     var s2: Scratch = .{};
     try std.testing.expectEqual(http.Status.unauthorized, dispatch(&app, io, testCtx(.GET, "/api/v1/me"), "", &s2).status);
     var me_ctx = testCtx(.GET, "/api/v1/me");
     me_ctx.cookie_token = token;
     try std.testing.expectEqual(http.Status.ok, dispatch(&app, io, me_ctx, "", &s2).status);
 
-    // logout without csrf is refused, with it works, and the session dies
     var out_ctx = testCtx(.POST, "/api/v1/logout");
     out_ctx.cookie_token = token;
     try std.testing.expectEqual(http.Status.forbidden, dispatch(&app, io, out_ctx, "", &s2).status);
@@ -998,7 +914,6 @@ test "system and history need a session and real data" {
     defer app.deinit(io);
     var s: Scratch = .{};
 
-    // anonymous
     try std.testing.expectEqual(http.Status.unauthorized, dispatch(&app, io, testCtx(.GET, "/api/v1/system"), "", &s).status);
     try std.testing.expectEqual(http.Status.unauthorized, dispatch(&app, io, testCtx(.GET, "/api/v1/history"), "", &s).status);
 
@@ -1006,15 +921,12 @@ test "system and history need a session and real data" {
     var ctx = testCtx(.GET, "/api/v1/system");
     ctx.cookie_token = issued.token;
 
-    // authenticated but no sample yet
     try std.testing.expectEqual(http.Status.service_unavailable, dispatch(&app, io, ctx, "", &s).status);
 
     var snap: @import("agent/collect.zig").Snapshot = .{ .ts_s = 1000, .cpu_pct = 25 };
     snap.mem = .{ .total_kb = 1000, .available_kb = 250 };
     snap.hostname.set("testbox");
     app.sampler.ingest(io, snap);
-    // The first sample is never plotted (no counters to diff), so history
-    // needs a second one before it has anything to show.
     snap.ts_s = 1002;
     app.sampler.ingest(io, snap);
 
@@ -1027,7 +939,6 @@ test "system and history need a session and real data" {
     try std.testing.expectEqual(http.Status.ok, hist.status);
     try std.testing.expect(std.mem.startsWith(u8, hist.body, "{\"ts\":[1002]"));
 
-    // wrong method
     ctx.method = .POST;
     try std.testing.expectEqual(http.Status.method_not_allowed, dispatch(&app, io, ctx, "", &s).status);
 }
@@ -1044,7 +955,6 @@ test "stream tick emits a snapshot once, then pings" {
     var last: i64 = 0;
     var last_alerts: u32 = 0;
 
-    // First tick, no sample yet: the (empty) alert list, then a keepalive.
     try streamTick(&app, io, &out.writer, &last, &last_alerts);
     try std.testing.expectEqualStrings("event: alerts\ndata: {\"alerts\":[]}\n\n: ping\n\n", out.written());
 
@@ -1056,15 +966,12 @@ test "stream tick emits a snapshot once, then pings" {
     try std.testing.expect(std.mem.startsWith(u8, out.written(), "event: snapshot\ndata: {"));
     try std.testing.expect(std.mem.endsWith(u8, out.written(), "}\n\n"));
     try std.testing.expect(std.mem.find(u8, out.written(), "streambox") != null);
-    // exactly one data line: SSE data must not contain raw newlines
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, out.written(), "\ndata: "));
 
-    // same timestamp again: no duplicate event
     out.clearRetainingCapacity();
     try streamTick(&app, io, &out.writer, &last, &last_alerts);
     try std.testing.expectEqualStrings(": ping\n\n", out.written());
 
-    // a new alert shows up in the stream exactly once
     var hot: @import("agent/collect.zig").Snapshot = .{ .ts_s = 80 };
     hot.mem = .{ .total_kb = 1000, .available_kb = 20 };
     App.onSample(&app, io, &hot);
@@ -1106,12 +1013,9 @@ test "docker routes enforce auth, role, csrf and validation before touching dock
     defer arena.deinit();
     var app = try testApp(arena.allocator());
     defer app.deinit(io);
-    // Points at nothing. Any request that gets past the checks below would
-    // fail with 503, which is how these tests prove the checks ran first.
     app.docker = .{ .io = io, .socket_path = if (@import("builtin").os.tag == .windows) "C:\\Windows\\Temp\\nodos-none.sock" else "/tmp/nodos-none.sock" };
     var s: Scratch = .{};
 
-    // anonymous
     try std.testing.expectEqual(http.Status.unauthorized, dispatch(&app, io, testCtx(.GET, "/api/v1/docker/containers"), "", &s).status);
     try std.testing.expectEqual(http.Status.unauthorized, dispatch(&app, io, testCtx(.POST, "/api/v1/docker/containers/web/restart"), "", &s).status);
 
@@ -1120,45 +1024,37 @@ test "docker routes enforce auth, role, csrf and validation before touching dock
 
     var v = testCtx(.GET, "/api/v1/docker/containers/web/logs");
     v.cookie_token = viewer.token;
-    // viewers can't read logs or act
     try std.testing.expectEqual(http.Status.forbidden, dispatch(&app, io, v, "", &s).status);
     v.method = .POST;
     v.path = "/api/v1/docker/containers/web/stop";
     v.csrf = viewer.csrf;
     try std.testing.expectEqual(http.Status.forbidden, dispatch(&app, io, v, "", &s).status);
 
-    // admin without csrf is refused
     var ad = testCtx(.POST, "/api/v1/docker/containers/web/restart");
     ad.cookie_token = admin.token;
     try std.testing.expectEqual(http.Status.forbidden, dispatch(&app, io, ad, "", &s).status);
 
-    // admin with csrf passes the checks and then hits the unreachable socket
     ad.csrf = admin.csrf;
     try std.testing.expectEqual(http.Status.service_unavailable, dispatch(&app, io, ad, "", &s).status);
 
-    // unknown verbs never reach docker, including destructive ones
     ad.path = "/api/v1/docker/containers/web/kill";
     try std.testing.expectEqual(http.Status.not_found, dispatch(&app, io, ad, "", &s).status);
     ad.path = "/api/v1/docker/containers/web/rm";
     try std.testing.expectEqual(http.Status.not_found, dispatch(&app, io, ad, "", &s).status);
 
-    // hostile container references
     ad.path = "/api/v1/docker/containers/..%2f..%2fetc/restart";
     try std.testing.expectEqual(http.Status.bad_request, dispatch(&app, io, ad, "", &s).status);
     ad.path = "/api/v1/docker/containers/-rf/restart";
     try std.testing.expectEqual(http.Status.bad_request, dispatch(&app, io, ad, "", &s).status);
 
-    // wrong methods
     ad.path = "/api/v1/docker/containers/web/restart";
     ad.method = .GET;
     try std.testing.expectEqual(http.Status.method_not_allowed, dispatch(&app, io, ad, "", &s).status);
 
-    // viewers may list; here that reaches the dead socket
     var vl = testCtx(.GET, "/api/v1/docker/containers");
     vl.cookie_token = viewer.token;
     try std.testing.expectEqual(http.Status.service_unavailable, dispatch(&app, io, vl, "", &s).status);
 
-    // integration off
     app.docker = null;
     try std.testing.expectEqualStrings("{\"error\":\"docker integration is turned off\"}", dispatch(&app, io, vl, "", &s).body);
 }
@@ -1189,11 +1085,9 @@ test "service routes enforce auth, role, csrf and the allowlist before running a
 
     var ad = testCtx(.POST, "/api/v1/services/ssh/restart");
     ad.cookie_token = admin.token;
-    // admin without csrf
     try std.testing.expectEqual(http.Status.forbidden, dispatch(&app, io, ad, "", &s).status);
     ad.csrf = admin.csrf;
 
-    // units off the allowlist are invisible, whatever they look like
     for ([_][]const u8{
         "/api/v1/services/sshd/restart",
         "/api/v1/services/ssh.service/restart",
@@ -1206,19 +1100,16 @@ test "service routes enforce auth, role, csrf and the allowlist before running a
         try std.testing.expectEqual(http.Status.not_found, dispatch(&app, io, ad, "", &s).status);
     }
 
-    // verbs outside start/stop/restart
     for ([_][]const u8{ "mask", "disable", "kill", "enable", "daemon-reload", "isolate" }) |verb| {
         var pb: [80]u8 = undefined;
         ad.path = try std.fmt.bufPrint(&pb, "/api/v1/services/ssh/{s}", .{verb});
         try std.testing.expectEqual(http.Status.not_found, dispatch(&app, io, ad, "", &s).status);
     }
 
-    // wrong method on an allowed unit and verb
     ad.path = "/api/v1/services/ssh/restart";
     ad.method = .GET;
     try std.testing.expectEqual(http.Status.method_not_allowed, dispatch(&app, io, ad, "", &s).status);
 
-    // feature off
     app.systemd = null;
     var any = testCtx(.GET, "/api/v1/services");
     any.cookie_token = viewer.token;
@@ -1244,7 +1135,6 @@ test "lockout after repeated failures" {
     while (i < ratelimit.Limiter.max_failures) : (i += 1) {
         _ = dispatch(&app, io, testCtx(.POST, "/api/v1/login"), "{\"username\":\"alice\",\"password\":\"wrong wrong wrong\"}", &s);
     }
-    // even the right password is refused while locked out
     const r = dispatch(&app, io, testCtx(.POST, "/api/v1/login"), "{\"username\":\"alice\",\"password\":\"correct horse battery\"}", &s);
     try std.testing.expectEqual(http.Status.too_many_requests, r.status);
 }

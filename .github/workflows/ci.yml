@@ -53,7 +53,6 @@ jobs:
           zig build -Doptimize=ReleaseSafe -Dstrip=true -Dbuild-version=9.9.9 --prefix /tmp/nodos-new
           zig build -Doptimize=ReleaseSafe -Dstrip=true -Dbuild-version=9.9.10 --prefix /tmp/nodos-patch
       - name: Update end to end (signatures, attacks, rollback, unattended rules)
-        # root, because replacing an installed binary needs it
         run: sudo env "PATH=$PATH" PATCH_DIR=/tmp/nodos-patch bash scripts/update_e2e.sh /tmp/nodos-new "$PWD/zig-out/bin/nodos" /tmp/signtool/bin/release-sign
 
   lint:
@@ -96,9 +95,6 @@ jobs:
           sleep 5
           curl -s -H "Cookie: nodos_session=$TOKEN" http://127.0.0.1:8080/api/v1/system | grep -Eq '"total_kb":[1-9]'
       - name: Measure the running service
-        # Numbers from a shared 2 core GitHub VM: indicative, not a benchmark.
-        # They go to the job summary so docs/development/performance.md can
-        # quote real Linux figures instead of guesses.
         run: |
           set -u
           PID=$(systemctl show -p MainPID --value nodos)
@@ -114,7 +110,6 @@ jobs:
           H=$(for _ in $(seq 1 500); do curl -s -o /dev/null -w '%{time_total}\n' http://127.0.0.1:8080/api/v1/health; done | pctl)
           S=$(for _ in $(seq 1 500); do curl -s -o /dev/null -w '%{time_total}\n' -H "Cookie: nodos_session=$TOKEN" http://127.0.0.1:8080/api/v1/system; done | pctl)
           AFTER_RSS=$(rss)
-          # fill the stream cap (16) and watch memory and CPU for 10 s
           for _ in $(seq 1 16); do curl -s -N --max-time 12 -H "Cookie: nodos_session=$TOKEN" http://127.0.0.1:8080/api/v1/stream >/dev/null & done
           sleep 3
           T3=$(ticks); sleep 8; T4=$(ticks)

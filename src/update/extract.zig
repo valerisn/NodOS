@@ -1,28 +1,17 @@
-//! Pulling the `nodos` binary out of a release tarball, in memory.
-//!
-//! Nothing from the archive touches the filesystem by name: we scan the entries
-//! and copy out the bytes of the one regular file called `nodos`. A hostile
-//! archive full of `../../etc/passwd` entries has nowhere to go.
 const std = @import("std");
 const Io = std.Io;
 const flate = std.compress.flate;
 
 pub const Error = error{
-    /// Not a readable gzip tar.
     BadArchive,
-    /// No regular file named `nodos` in it.
     BinaryMissing,
-    /// A binary bigger than we are willing to install.
     TooLarge,
     OutOfMemory,
 };
 
-/// The release binary is under a megabyte. 32 MiB leaves room to grow and
-/// still stops a decompression bomb long before it hurts.
+// the real binary is under 1 MB, this just stops a decompression bomb
 pub const max_binary = 32 * 1024 * 1024;
 
-/// Returns the bytes of the first entry that is a regular file whose last path
-/// component is exactly `nodos`.
 pub fn binaryFromTarGz(arena: std.mem.Allocator, tgz: []const u8) Error![]u8 {
     var in: Io.Reader = .fixed(tgz);
     var window: [flate.max_window_len]u8 = undefined;
@@ -40,7 +29,6 @@ pub fn binaryFromTarGz(arena: std.mem.Allocator, tgz: []const u8) Error![]u8 {
         if (entry.size > max_binary) return error.TooLarge;
         const out = try arena.alloc(u8, @intCast(entry.size));
         it.reader.readSliceAll(out) catch return error.BadArchive;
-        // We consumed the content ourselves; tell the iterator not to skip it again.
         it.unread_file_bytes = 0;
         return out;
     }
@@ -62,15 +50,12 @@ test "garbage and truncated archives fail cleanly" {
     const a = arena.allocator();
     try std.testing.expectError(error.BadArchive, binaryFromTarGz(a, ""));
     try std.testing.expectError(error.BadArchive, binaryFromTarGz(a, "this is not gzip at all"));
-    // chop the real archive in half
     const r = binaryFromTarGz(a, sample[0 .. sample.len / 2]);
     try std.testing.expect(std.meta.isError(r));
     if (r) |_| return error.TestUnexpectedResult else |e| try std.testing.expect(e == error.BadArchive or e == error.BinaryMissing);
 }
 
 test "an archive without a nodos file reports that" {
-    // the same tarball, searched by a different rule: no scripts/nodos exists,
-    // and install.sh must not be mistaken for the binary
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     const bin = try binaryFromTarGz(arena.allocator(), sample);
