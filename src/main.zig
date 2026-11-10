@@ -16,6 +16,8 @@ const usage =
     \\  user remove NAME [--config PATH]
     \\                               Delete a user (never the last admin)
     \\  user list [--config PATH]    Show users and roles
+    \\  update [--check] [--rollback] [--auto on|off|status] [--yes] [--config PATH]
+    \\                               Check for, install or undo a release
     \\  version                      Print version and exit
     \\  help                         Show this message
     \\
@@ -57,6 +59,12 @@ pub fn main(init: std.process.Init) !void {
         .help => try w.writeAll(usage),
         .version => try w.print("nodos {s}\n", .{nodos.version}),
         .serve => try serve(init, cmd),
+        .update => {
+            try w.flush();
+            const code = nodos.update.updater.run(init.io, init.gpa, arena, w, cmd.update);
+            try w.flush();
+            if (code != 0) std.process.exit(code);
+        },
         .user_add, .user_passwd, .user_remove, .user_list => try userCommand(init, cmd, w),
     }
     try w.flush();

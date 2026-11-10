@@ -22,6 +22,8 @@ function showLogin() {
   current = null;
   setCsrf("");
   $("app").hidden = true;
+  clearInterval(updateTimer);
+  $("update").hidden = true;
   renderAlerts([]);
   $("login").hidden = false;
   $("password").value = "";
@@ -37,6 +39,7 @@ function showApp(me) {
   setCsrf(me.csrf);
   route();
   startStream();
+  startUpdateChecks();
 }
 
 function setConn(state, text) {
@@ -65,6 +68,59 @@ function renderAlerts(list) {
     }),
   );
 }
+
+// ---------------------------------------------------------------- updates
+
+let updateTimer = null;
+
+// Remember a dismissal per version, so a newer release shows the notice again.
+function dismissedVersion() {
+  try {
+    return localStorage.getItem("nodos.update.dismissed") || "";
+  } catch {
+    return "";
+  }
+}
+
+function rememberDismissed(version) {
+  try {
+    localStorage.setItem("nodos.update.dismissed", version);
+  } catch {
+    // Private mode or blocked storage: the notice just comes back next load.
+  }
+}
+
+async function checkUpdate() {
+  try {
+    const u = await get("/update");
+    const box = $("update");
+    if (!u.available || u.latest === dismissedVersion()) {
+      box.hidden = true;
+      return;
+    }
+    $("update-text").textContent = `NodOS ${u.latest.replace(/^v/, "")} is available. You have ${u.current}. To update, run this on the server:`;
+    $("update-cmd").textContent = u.command;
+    const link = $("update-link");
+    // Only link to an https page; the value comes from the release server.
+    link.hidden = !/^https:\/\//.test(u.page);
+    if (!link.hidden) link.href = u.page;
+    $("update-dismiss").dataset.version = u.latest;
+    box.hidden = false;
+  } catch {
+    // The notice is a nicety. Any failure just leaves it hidden.
+  }
+}
+
+function startUpdateChecks() {
+  clearInterval(updateTimer);
+  checkUpdate();
+  updateTimer = setInterval(checkUpdate, 30 * 60 * 1000);
+}
+
+$("update-dismiss").addEventListener("click", () => {
+  rememberDismissed($("update-dismiss").dataset.version || "");
+  $("update").hidden = true;
+});
 
 function notice(text) {
   $("notice").hidden = !text;

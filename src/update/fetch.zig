@@ -30,7 +30,14 @@ pub const Fetched = struct {
 /// sending gets cut off instead of filling memory.
 pub fn get(arena: std.mem.Allocator, io: Io, url: []const u8, max_bytes: usize, timeout_ms: u32) Error!Fetched {
     if (!release.urlAllowed(url)) return error.UrlNotAllowed;
+    return getAny(arena, io, url, max_bytes, timeout_ms);
+}
 
+/// Same as `get` without the https-or-loopback rule. Only for probing our own
+/// server after a restart, where the address comes from our own config file
+/// and may be a LAN address over plain http. Never use it on a URL that came
+/// from the network.
+pub fn getAny(arena: std.mem.Allocator, io: Io, url: []const u8, max_bytes: usize, timeout_ms: u32) Error!Fetched {
     const Race = union(enum) {
         reply: Error!Fetched,
         timer: Io.Cancelable!void,

@@ -21,6 +21,7 @@ pub const update = struct {
     pub const extract = @import("update/extract.zig");
     pub const fetch = @import("update/fetch.zig");
     pub const checker = @import("update/checker.zig");
+    pub const updater = @import("update/updater.zig");
 };
 pub const integrations = struct {
     pub const docker = @import("integrations/docker.zig");
