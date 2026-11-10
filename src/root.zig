@@ -16,6 +16,9 @@ pub const ratelimit = @import("ratelimit.zig");
 pub const audit = @import("audit.zig");
 pub const update = struct {
     pub const version = @import("update/version.zig");
+    pub const verify = @import("update/verify.zig");
+    pub const release = @import("update/release.zig");
+    pub const extract = @import("update/extract.zig");
 };
 pub const integrations = struct {
     pub const docker = @import("integrations/docker.zig");
