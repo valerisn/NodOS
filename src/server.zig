@@ -272,6 +272,14 @@ fn dockerRoute(app: *App, io: Io, ctx: Ctx, s: *Scratch) Reply {
         return .{ .status = .ok, .body = w.buffered() };
     }
 
+    if (std.mem.eql(u8, rest, "/images")) {
+        if (ctx.method != .GET and ctx.method != .HEAD) return err_method;
+        const list = docker.listImages(client, a) catch |e| return dockerFailure(e);
+        var w: Io.Writer = .fixed(&s.big);
+        docker.writeImages(&w, list) catch return err_internal;
+        return .{ .status = .ok, .body = w.buffered() };
+    }
+
     const prefix = "/containers/";
     if (!std.mem.startsWith(u8, rest, prefix)) return err_not_found;
     const tail = rest[prefix.len..];
@@ -279,6 +287,15 @@ fn dockerRoute(app: *App, io: Io, ctx: Ctx, s: *Scratch) Reply {
     const ref = tail[0..slash];
     const verb = tail[slash + 1 ..];
     if (!docker.validRef(ref)) return err_bad;
+
+    if (std.mem.eql(u8, verb, "stats")) {
+        if (ctx.method != .GET) return err_method;
+        const st = (docker.fetchStats(client, a, ref) catch |e| return dockerFailure(e)) orelse
+            return .{ .status = .not_found, .body = "{\"error\":\"no such container\"}" };
+        var w: Io.Writer = .fixed(&s.big);
+        docker.writeStats(&w, st) catch return err_internal;
+        return .{ .status = .ok, .body = w.buffered() };
+    }
 
     if (std.mem.eql(u8, verb, "logs")) {
         if (ctx.method != .GET) return err_method;
@@ -1078,6 +1095,8 @@ test "docker routes enforce auth, role, csrf and validation before touching dock
     var s: Scratch = .{};
 
     try std.testing.expectEqual(http.Status.unauthorized, dispatch(&app, io, testCtx(.GET, "/api/v1/docker/containers"), "", &s).status);
+    try std.testing.expectEqual(http.Status.unauthorized, dispatch(&app, io, testCtx(.GET, "/api/v1/docker/images"), "", &s).status);
+    try std.testing.expectEqual(http.Status.unauthorized, dispatch(&app, io, testCtx(.GET, "/api/v1/docker/containers/web/stats"), "", &s).status);
     try std.testing.expectEqual(http.Status.unauthorized, dispatch(&app, io, testCtx(.POST, "/api/v1/docker/containers/web/restart"), "", &s).status);
 
     const viewer = try app.sessions.create(app.gpa, io, 2, .viewer, 1000);

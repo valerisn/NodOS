@@ -34,6 +34,24 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(body)
+        elif self.path.startswith("/images/json"):
+            body = json.dumps([{"Id": "sha256:0a1b2c3d4e5f60718293", "RepoTags": ["nginx:1.27"], "Size": 192000000, "Created": 1700000000}]).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+        elif "/stats" in self.path:
+            body = json.dumps({
+                "cpu_stats": {"cpu_usage": {"total_usage": 2000000}, "system_cpu_usage": 100000000, "online_cpus": 4},
+                "precpu_stats": {"cpu_usage": {"total_usage": 1000000}, "system_cpu_usage": 50000000},
+                "memory_stats": {"usage": 300000, "limit": 1000000, "stats": {"inactive_file": 100000}},
+                "pids_stats": {"current": 7},
+                "networks": {"eth0": {"rx_bytes": 10, "tx_bytes": 20}},
+            }).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
         elif "/logs" in self.path:
             text = b"web starting\nlistening on :8080\n"
             frame = b"\x01\x00\x00\x00" + struct.pack(">I", len(text)) + text

@@ -246,6 +246,166 @@ pub fn writeContainers(w: *Io.Writer, list: Listing) Io.Writer.Error!void {
     try j.endObject();
 }
 
+pub const Image = struct {
+    id: []const u8,
+    tags: []const []const u8,
+    size: u64,
+    created: i64,
+};
+
+const RawImage = struct {
+    Id: []const u8 = "",
+    RepoTags: ?[]const []const u8 = null,
+    Size: u64 = 0,
+    Created: i64 = 0,
+};
+
+pub const max_images = 64;
+
+pub const ImageListing = struct {
+    items: []Image,
+    total: usize,
+};
+
+pub fn listImages(c: Client, arena: Allocator) (Client.Error || error{BadJson})!ImageListing {
+    const resp = try c.request(arena, "GET", "/images/json", 2 * 1024 * 1024);
+    if (resp.status != 200) return error.BadResponse;
+    return parseImages(arena, resp.body);
+}
+
+pub fn parseImages(arena: Allocator, body: []const u8) (Client.Error || error{BadJson})!ImageListing {
+    const raw = std.json.parseFromSliceLeaky([]RawImage, arena, body, .{ .ignore_unknown_fields = true }) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.BadJson,
+    };
+    const n = @min(raw.len, max_images);
+    const out = try arena.alloc(Image, n);
+    for (raw[0..n], out) |r, *o| {
+        const id = if (std.mem.startsWith(u8, r.Id, "sha256:")) r.Id["sha256:".len..] else r.Id;
+        o.* = .{
+            .id = id[0..@min(id.len, 12)],
+            .tags = r.RepoTags orelse &.{},
+            .size = r.Size,
+            .created = r.Created,
+        };
+    }
+    return .{ .items = out, .total = raw.len };
+}
+
+pub fn writeImages(w: *Io.Writer, list: ImageListing) Io.Writer.Error!void {
+    var j: std.json.Stringify = .{ .writer = w };
+    try j.beginObject();
+    try j.objectField("total");
+    try j.write(list.total);
+    try j.objectField("images");
+    try j.beginArray();
+    for (list.items) |im| {
+        try j.beginObject();
+        try j.objectField("id");
+        try j.write(im.id);
+        try j.objectField("tags");
+        try j.write(im.tags);
+        try j.objectField("size");
+        try j.write(im.size);
+        try j.objectField("created");
+        try j.write(im.created);
+        try j.endObject();
+    }
+    try j.endArray();
+    try j.endObject();
+}
+
+pub const Stats = struct {
+    cpu_percent: ?f64,
+    mem_used: u64,
+    mem_limit: u64,
+    pids: u64,
+    net_rx: u64,
+    net_tx: u64,
+};
+
+const CpuRaw = struct {
+    cpu_usage: struct { total_usage: u64 = 0 } = .{},
+    system_cpu_usage: u64 = 0,
+    online_cpus: u32 = 0,
+};
+
+const StatsRaw = struct {
+    cpu_stats: CpuRaw = .{},
+    precpu_stats: CpuRaw = .{},
+    memory_stats: struct {
+        usage: u64 = 0,
+        limit: u64 = 0,
+        stats: struct { inactive_file: u64 = 0, cache: u64 = 0 } = .{},
+    } = .{},
+    pids_stats: struct { current: u64 = 0 } = .{},
+    networks: ?std.json.ArrayHashMap(struct { rx_bytes: u64 = 0, tx_bytes: u64 = 0 }) = null,
+};
+
+pub fn fetchStats(c: Client, arena: Allocator, ref: []const u8) (Client.Error || error{BadJson})!?Stats {
+    if (!validRef(ref)) return error.InvalidTarget;
+    var buf: [160]u8 = undefined;
+    const target = std.fmt.bufPrint(&buf, "/containers/{s}/stats?stream=false", .{ref}) catch return error.InvalidTarget;
+    const resp = try c.request(arena, "GET", target, 256 * 1024);
+    if (resp.status == 404) return null;
+    if (resp.status != 200) return error.BadResponse;
+    return try parseStats(arena, resp.body);
+}
+
+pub fn parseStats(arena: Allocator, body: []const u8) (Client.Error || error{BadJson})!Stats {
+    const raw = std.json.parseFromSliceLeaky(StatsRaw, arena, body, .{ .ignore_unknown_fields = true }) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.BadJson,
+    };
+    var cpu: ?f64 = null;
+    const used_now = raw.cpu_stats.cpu_usage.total_usage;
+    const used_then = raw.precpu_stats.cpu_usage.total_usage;
+    const sys_now = raw.cpu_stats.system_cpu_usage;
+    const sys_then = raw.precpu_stats.system_cpu_usage;
+    if (used_then > 0 and sys_then > 0 and used_now >= used_then and sys_now > sys_then) {
+        const cores: f64 = @floatFromInt(@max(raw.cpu_stats.online_cpus, 1));
+        const d_used: f64 = @floatFromInt(used_now - used_then);
+        const d_sys: f64 = @floatFromInt(sys_now - sys_then);
+        cpu = d_used / d_sys * cores * 100.0;
+    }
+    const m = raw.memory_stats;
+    const cached = if (m.stats.inactive_file > 0) m.stats.inactive_file else m.stats.cache;
+    var rx: u64 = 0;
+    var tx: u64 = 0;
+    if (raw.networks) |nets| {
+        for (nets.map.values()) |n| {
+            rx +|= n.rx_bytes;
+            tx +|= n.tx_bytes;
+        }
+    }
+    return .{
+        .cpu_percent = cpu,
+        .mem_used = m.usage -| cached,
+        .mem_limit = m.limit,
+        .pids = raw.pids_stats.current,
+        .net_rx = rx,
+        .net_tx = tx,
+    };
+}
+
+pub fn writeStats(w: *Io.Writer, st: Stats) Io.Writer.Error!void {
+    var j: std.json.Stringify = .{ .writer = w };
+    try j.beginObject();
+    try j.objectField("cpu_percent");
+    try j.write(st.cpu_percent);
+    try j.objectField("mem_used");
+    try j.write(st.mem_used);
+    try j.objectField("mem_limit");
+    try j.write(st.mem_limit);
+    try j.objectField("pids");
+    try j.write(st.pids);
+    try j.objectField("net_rx");
+    try j.write(st.net_rx);
+    try j.objectField("net_tx");
+    try j.write(st.net_tx);
+    try j.endObject();
+}
+
 pub fn demuxLogs(arena: Allocator, body: []const u8) Allocator.Error![]const u8 {
     const framed = body.len >= 8 and body[0] <= 2 and body[1] == 0 and body[2] == 0 and body[3] == 0;
     if (!framed) return body;
@@ -344,6 +504,13 @@ const fake = struct {
             try out.append(arena, ']');
             return .{ .status = 200, .body = out.items };
         }
+        if (std.mem.eql(u8, method, "GET") and std.mem.startsWith(u8, target, "/images/json")) {
+            return .{ .status = 200, .body =
+            \\[{"Id":"sha256:0a1b2c3d4e5f60718293","RepoTags":["nginx:1.27"],"Size":192000000,"Created":1700000000},
+            \\{"Id":"sha256:9f8e7d6c5b4a39281706","RepoTags":["postgres:16"],"Size":431000000,"Created":1700000100},
+            \\{"Id":"sha256:55667788aabbccddeeff","RepoTags":null,"Size":7800000,"Created":1700000200}]
+            };
+        }
         const prefix = "/containers/";
         if (!std.mem.startsWith(u8, target, prefix)) return .{ .status = 404, .body = "" };
         const rest = target[prefix.len..];
@@ -355,6 +522,10 @@ const fake = struct {
             if (std.mem.startsWith(u8, e.id, ref) or std.mem.eql(u8, e.name[1..], ref)) break i;
         } else return .{ .status = 404, .body = "" };
 
+        if (std.mem.eql(u8, verb, "stats")) {
+            if (!running[idx]) return .{ .status = 200, .body = "{\"cpu_stats\":{},\"precpu_stats\":{},\"memory_stats\":{}}" };
+            return .{ .status = 200, .body = stats_fixture };
+        }
         if (std.mem.eql(u8, verb, "logs")) {
             const text = try std.fmt.allocPrint(arena, "{s} starting\nlistening on :8080\nGET /health 200 1ms\nGET /health 200 1ms\nwarn: slow request took 812ms\n", .{entries[idx].name[1..]});
             var out: std.ArrayList(u8) = .empty;
@@ -432,6 +603,70 @@ const containers_fixture =
     \\"Labels":{"a":"b"},"State":"running","Status":"Up 2 hours","HostConfig":{"NetworkMode":"bridge"}},
     \\{"Id":"aaaa","Names":[],"Image":"busybox","State":"exited","Status":"Exited (0) 3 days ago","Created":5}]
 ;
+
+const images_fixture =
+    \\[{"Id":"sha256:aabbccddeeff00112233445566778899","RepoTags":["nginx:1.27","nginx:latest"],"Size":187654321,"Created":1700000000},
+    \\{"Id":"sha256:1122334455667788","RepoTags":null,"Size":5,"Created":1}]
+;
+
+test "image list parses, strips the hash prefix, and tolerates untagged images" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const list = try parseImages(arena.allocator(), images_fixture);
+    try std.testing.expectEqual(@as(usize, 2), list.items.len);
+    try std.testing.expectEqualStrings("aabbccddeeff", list.items[0].id);
+    try std.testing.expectEqual(@as(usize, 2), list.items[0].tags.len);
+    try std.testing.expectEqual(@as(usize, 0), list.items[1].tags.len);
+
+    var out: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    try writeImages(&out.writer, list);
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, out.written(), .{});
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 2), parsed.value.object.get("images").?.array.items.len);
+    try std.testing.expectError(error.BadJson, parseImages(arena.allocator(), "{}"));
+}
+
+const stats_fixture =
+    \\{"cpu_stats":{"cpu_usage":{"total_usage":2000000},"system_cpu_usage":100000000,"online_cpus":4},
+    \\"precpu_stats":{"cpu_usage":{"total_usage":1000000},"system_cpu_usage":50000000,"online_cpus":4},
+    \\"memory_stats":{"usage":300000,"limit":1000000,"stats":{"inactive_file":100000}},
+    \\"pids_stats":{"current":7},
+    \\"networks":{"eth0":{"rx_bytes":10,"tx_bytes":20},"eth1":{"rx_bytes":1,"tx_bytes":2}}}
+;
+
+test "stats: cpu from the two samples, memory without cache, network summed" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const st = try parseStats(arena.allocator(), stats_fixture);
+    try std.testing.expectApproxEqAbs(@as(f64, 8.0), st.cpu_percent.?, 0.001);
+    try std.testing.expectEqual(@as(u64, 200000), st.mem_used);
+    try std.testing.expectEqual(@as(u64, 1000000), st.mem_limit);
+    try std.testing.expectEqual(@as(u64, 7), st.pids);
+    try std.testing.expectEqual(@as(u64, 11), st.net_rx);
+    try std.testing.expectEqual(@as(u64, 22), st.net_tx);
+}
+
+test "stats: a stopped or brand new container has no cpu figure and does not crash" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const st = try parseStats(arena.allocator(), "{\"cpu_stats\":{},\"precpu_stats\":{},\"memory_stats\":{}}");
+    try std.testing.expect(st.cpu_percent == null);
+    try std.testing.expectEqual(@as(u64, 0), st.mem_used);
+
+    var out: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    try writeStats(&out.writer, st);
+    try std.testing.expect(std.mem.find(u8, out.written(), "\"cpu_percent\":null") != null);
+    try std.testing.expectError(error.BadJson, parseStats(arena.allocator(), "[]"));
+}
+
+test "stats refuse a reference that could alter the request" {
+    const c: Client = .{ .io = std.testing.io, .socket_path = "/nonexistent" };
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    try std.testing.expectError(error.InvalidTarget, fetchStats(c, arena.allocator(), "../x"));
+}
 
 test "container list parses and encodes" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);

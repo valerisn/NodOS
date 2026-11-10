@@ -93,6 +93,11 @@ if [ -z "${SMOKE_SKIP_POSIX:-}" ]; then
     echo "$LIST" | grep -q '"name":"web"' || fail "docker list missing web: $LIST"
     echo "$LIST" | grep -q '"total":2' || fail "docker list total: $LIST"
     curl -s "${AUTH[@]}" "$URL/docker/containers/web/logs?tail=5" | grep -q 'listening on :8080' || fail "docker logs"
+    [ "$(status "$URL/docker/images")" = "401" ] || fail "docker images without cookie should be 401"
+    curl -s "${AUTH[@]}" "$URL/docker/images" | grep -q '"tags":\["nginx:1.27"\]' || fail "docker images"
+    STATS="$(curl -s "${AUTH[@]}" "$URL/docker/containers/web/stats")"
+    echo "$STATS" | grep -q '"mem_used":200000' || fail "docker stats: $STATS"
+    echo "$STATS" | grep -q '"pids":7' || fail "docker stats pids: $STATS"
 
     [ "$(status -X POST -d '' "${AUTH[@]}" "$URL/docker/containers/web/restart")" = "403" ] || fail "docker restart without csrf"
     [ "$(status -X POST -d '' "${AUTH[@]}" -H "x-csrf-token: $CSRF" "$URL/docker/containers/web/restart")" = "200" ] || fail "docker restart"
