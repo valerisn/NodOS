@@ -236,13 +236,17 @@ pub const Options = struct {
 
 const Output = struct { code: u8, stdout: []u8 };
 
-fn exec(gpa: Allocator, io: Io, argv: []const []const u8, limit: usize) ?Output {
+// a cancel that is swallowed here is lost for good, and the loop would then sleep through a shutdown
+fn exec(gpa: Allocator, io: Io, argv: []const []const u8, limit: usize) Io.Cancelable!?Output {
     const r = std.process.run(gpa, io, .{
         .argv = argv,
         .stdout_limit = .limited(limit),
         .stderr_limit = .limited(8 * 1024),
         .timeout = .{ .duration = .{ .raw = .fromSeconds(20), .clock = .awake } },
-    }) catch return null;
+    }) catch |err| switch (err) {
+        error.Canceled => return error.Canceled,
+        else => return null,
+    };
     gpa.free(r.stderr);
     const code: u8 = switch (r.term) {
         .exited => |x| x,
@@ -251,17 +255,20 @@ fn exec(gpa: Allocator, io: Io, argv: []const []const u8, limit: usize) ?Output 
     return .{ .code = code, .stdout = r.stdout };
 }
 
-pub fn collectFast(gpa: Allocator, io: Io, report: *Report) void {
+pub fn collectFast(gpa: Allocator, io: Io, report: *Report) Io.Cancelable!void {
     if (comptime build_options.fake_host) return fakeFast(report);
-    const text = Io.Dir.cwd().readFileAlloc(io, "/proc/mdstat", gpa, .limited(64 * 1024)) catch return;
+    const text = Io.Dir.cwd().readFileAlloc(io, "/proc/mdstat", gpa, .limited(64 * 1024)) catch |err| switch (err) {
+        error.Canceled => return error.Canceled,
+        else => return,
+    };
     defer gpa.free(text);
     parseMdstat(text, report);
 }
 
-pub fn collectSlow(gpa: Allocator, io: Io, opts: Options, report: *Report) void {
+pub fn collectSlow(gpa: Allocator, io: Io, opts: Options, report: *Report) Io.Cancelable!void {
     if (comptime build_options.fake_host) return fakeSlow(report);
     if (opts.zfs) {
-        if (exec(gpa, io, &.{ "zpool", "list", "-H", "-o", "name,health,capacity" }, 64 * 1024)) |o| {
+        if (try exec(gpa, io, &.{ "zpool", "list", "-H", "-o", "name,health,capacity" }, 64 * 1024)) |o| {
             defer gpa.free(o.stdout);
             if (o.code == 0) parseZpool(o.stdout, report) else report.add(.zpool, "zpool", .warn, "zpool list failed");
         } else report.add(.zpool, "zpool", .warn, "zpool not available");
@@ -270,7 +277,7 @@ pub fn collectSlow(gpa: Allocator, io: Io, opts: Options, report: *Report) void 
         if (!validDevice(dev)) continue;
         var arena_state: std.heap.ArenaAllocator = .init(gpa);
         defer arena_state.deinit();
-        const o = exec(gpa, io, &.{ "smartctl", "--json=o", "-a", "-n", "standby", dev }, 512 * 1024) orelse {
+        const o = (try exec(gpa, io, &.{ "smartctl", "--json=o", "-a", "-n", "standby", dev }, 512 * 1024)) orelse {
             report.add(.smart, dev["/dev/".len..], .warn, "smartctl not available");
             continue;
         };
@@ -317,10 +324,10 @@ pub const Monitor = struct {
         while (true) {
             if (round % 10 == 0) {
                 slow_report = .{};
-                collectSlow(gpa, io, opts, &slow_report);
+                try collectSlow(gpa, io, opts, &slow_report);
             }
             var fresh: Report = .{};
-            collectFast(gpa, io, &fresh);
+            try collectFast(gpa, io, &fresh);
             for (slow_report.slice()) |it| {
                 if (fresh.count < max_items) {
                     fresh.items[fresh.count] = it;
