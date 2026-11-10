@@ -58,9 +58,12 @@ implemented and tested.
 - [x] Release signing key generated and the public half committed (`src/update/signing.pub`); the first signed release is waiting for the maintainer to tag it
 - [x] Storage health: mdadm RAID, ZFS pools and SMART (opt-in) with alerts
 
+- [x] Apps: catalog of 22 apps installed through Docker
+- [x] Multiple servers: hub with API tokens and a role-aware proxy
+
 ## Later
 
-Proxmox and VM management, backups of more than NodOS itself, multiple servers, users and roles, custom
+Proxmox and VM management, backups of more than NodOS itself, updating installed apps, users and roles, custom
 widgets, plugins.
 
 ## Known technical risks

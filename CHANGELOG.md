@@ -31,6 +31,12 @@ Found in the pre-release review, all fixed before any release. Details in
 
 ### Added
 
+- Apps page: a catalog of 22 popular self-hosted apps installed through Docker with one click, background install progress, generated passwords, private networks and named volumes. Admin only, audited.
+- Several servers: `nodos token add` / `nodos server add`, a Server menu in the dashboard, and an authenticated proxy that respects the signed-in user's role.
+- Dashboard polish: sticky header, page titles, hover and focus states, motion that respects reduced-motion settings, scrolling navigation on phones.
+- API tokens (`Authorization: Bearer`) with admin or viewer role.
+- The server exits after four seconds if a shutdown hangs.
+
 - Docker page: the Stats button opens live CPU and memory charts for a container, measured only while the panel is open.
 
 - Storage health: software RAID from `/proc/mdstat` by default, ZFS pools and SMART disk checks when enabled (`zfs`, `smart_devices`). Problems raise alerts and show on the Storage page.

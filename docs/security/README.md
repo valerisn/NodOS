@@ -69,7 +69,15 @@ These are real. None is hidden elsewhere.
    `nodos`; there is no live user management through the web interface.
 9. **Thresholds for alerts are fixed**, and alerts are in-app only. There is no
    outbound email or webhook, so an alert nobody is looking at is silent.
-10. **The update system is a trust decision.** Anyone who can sign a release
+10. **A hub holds credentials for every server it connects.** `servers.db`
+    contains API tokens in clear text (mode 0600), because the hub has to
+    present them. Compromising the hub gives that token's role on every
+    connected server. Use viewer tokens where the hub only needs to look, HTTPS
+    between machines, and protect the hub's own login (two-factor).
+11. **Installing apps trusts public images.** The catalog is fixed in the
+    binary and image names cannot be changed from the web, but most use moving
+    tags, so an app's release is trusted when it is pulled.
+12. **The update system is a trust decision.** Anyone who can sign a release
     can run code as root on every machine that installs it, so the signing key
     is the most valuable secret in the project. It lives in a GitHub Actions
     secret and one offline backup. If it leaks, rotate it with
@@ -78,13 +86,13 @@ These are real. None is hidden elsewhere.
     signed, so a network attacker can hide an update or point at an older signed
     release; the updater refuses to go backwards, but it cannot make you update.
     The update check contacts GitHub (see the README for what is sent).
-11. **An idle-connection flood denies service while it lasts.** The server
+13. **An idle-connection flood denies service while it lasts.** The server
     holds 256 connections; an attacker who keeps opening idle ones keeps them
     all busy, and each is only cut after 15 seconds. It recovers by itself as
     soon as the attacker stops (verified in CI), but while it continues, real
     users are locked out. Put rate limiting in the reverse proxy. On Windows
     (development only) the cutoff does not free slots until the client lets go.
-12. **The standard library is young.** `std.http.Server` crashed on one class of
+14. **The standard library is young.** `std.http.Server` crashed on one class of
     input (fixed with a guard). More such edges are likely. Parsers and the
     login path get mutation tests on every build, but there has been no long
     fuzzing campaign.

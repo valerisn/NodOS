@@ -43,7 +43,15 @@ into the binary.
   Ten minutes of history, pushed live over Server-Sent Events.
 - **Alerts** for sustained high CPU, low memory, heavy swap, nearly full disks
   and high temperatures, with hysteresis so they don't flap.
-- **Docker**: list containers, read logs, start, stop and restart.
+- **Docker**: list containers, read logs, start, stop and restart, see images
+  and live CPU and memory per container.
+- **Apps**: a catalog of 22 popular home server apps (Jellyfin, Immich,
+  Nextcloud, Vaultwarden, Home Assistant, Pi-hole, Paperless-ngx, the *arr
+  apps and more) that NodOS installs with Docker in one click, with a private
+  network and named data volumes for each. See [docs/apps](docs/apps/README.md).
+- **Many servers**: connect more than one NodOS machine and switch between them
+  in the dashboard, with a per-server API token and the same roles. See
+  [docs/multi-server](docs/multi-server/README.md).
 - **systemd services**: status, logs, start, stop and restart for an allowlist
   of units you choose.
 - **Updates**: a notice in the dashboard when a new release exists, and
@@ -54,8 +62,8 @@ into the binary.
   protection, login throttling, and an append-only audit log of everything
   that changes something.
 
-Not built yet: outbound notifications (email, webhook), Docker stats and
-images, VM management, multiple servers, user management in the browser. See
+Not built yet: email notifications, VM management, user management in the
+browser, updating installed apps from the dashboard. See
 the [roadmap](ROADMAP.md).
 
 ## Quick start

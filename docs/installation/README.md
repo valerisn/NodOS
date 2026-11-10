@@ -228,6 +228,12 @@ What is done to make it less risky:
 It is still not risk free. Read the changelog and run `sudo nodos update`
 yourself when it suits you; that is the safer habit.
 
+## Apps and other servers
+
+Install ready-made apps from the Apps page ([catalog and details](../apps/README.md)).
+Connect more than one NodOS machine with `nodos token add` and `nodos server add`
+([several servers](../multi-server/README.md)).
+
 ## Two-factor login
 
 ```sh

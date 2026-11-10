@@ -484,7 +484,7 @@ fn remoteRoute(app: *App, io: Io, ctx: Ctx, body: []const u8, s: *Scratch) Reply
         const target = std.fmt.bufPrint(&tbuf, "{s} {s}", .{ srv.name, sub }) catch srv.name;
         app.recordTarget(io, ctx.now_s, userName(app, sess), "remote.act", target, res.status >= 200 and res.status < 300, ctx.ip_text);
     }
-    if (res.body.len > s.big.len) return err_remote_down;
+    if (res.body.len > s.big.len or res.status < 200 or res.status > 599) return err_remote_down;
     @memcpy(s.big[0..res.body.len], res.body);
     return .{ .status = @fromBackingInt(@intCast(res.status)), .body = s.big[0..res.body.len] };
 }

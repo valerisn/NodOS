@@ -45,6 +45,36 @@ Requires a session. Returns `{"total","images":[{"id","tags","size","created"}]}
 
 Requires a session. Returns `{"cpu_percent","mem_used","mem_limit","pids","net_rx","net_tx"}`. `cpu_percent` is `null` when Docker has no earlier sample to compare with. The call takes about a second because Docker measures over an interval. The dashboard calls it every 5 seconds while a container panel is open and draws the history in the browser; NodOS itself stores no per-container history. 404 for an unknown container.
 
+### Apps
+
+`GET /api/v1/apps` (any session): the catalog with `installed` and `running`
+per app and a `docker` field (`ok`, `off` or `down`).
+
+`POST /api/v1/apps/install` (admin, CSRF): body `{"id","port"?,"paths"?:{key:path},"lan_only"?}`.
+Answers 202 and works in the background; 400 for a missing or disallowed folder
+or port, 404 for an unknown app, 409 if it is already being installed.
+
+`GET /api/v1/apps/jobs` (admin): recent installs with `state`
+(`pulling`, `starting`, `done`, `failed`), a `message`, and for apps that need
+one a generated password, shown while the job is kept.
+
+`POST /api/v1/apps/{id}/remove` (admin, CSRF): removes the containers, keeps
+the volumes.
+
+### Servers and API tokens
+
+`GET /api/v1/servers` (any session): `{"servers":[{"name","host"}]}`, never
+addresses with credentials or tokens.
+
+`/api/v1/remote/{name}/...` (session, not a token): passes the request on to
+that server and returns its answer. Viewers may only read the paths listed in
+[multi-server](../multi-server/README.md); other methods need an admin and the
+CSRF token. 502 means the server cannot be reached, 504 that it did not answer.
+
+Machines can authenticate with `Authorization: Bearer <token>` instead of a
+cookie. Tokens come from `nodos token add NAME [--role viewer]`, carry that
+role and need no CSRF header. A token cannot call `/remote`.
+
 ### `GET /api/v1/me`
 
 Requires a session. Returns `{"username","role","csrf"}`. 401 otherwise.
