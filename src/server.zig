@@ -11,6 +11,7 @@ const audit = @import("audit.zig");
 const assets = @import("assets.zig");
 const alerts_mod = @import("alerts.zig");
 const notify = @import("notify.zig");
+const totp = @import("totp.zig");
 const update_checker = @import("update/checker.zig");
 const update_release = @import("update/release.zig");
 const docker = @import("integrations/docker.zig");
@@ -41,6 +42,8 @@ pub const App = struct {
     alerts: alerts_mod.Engine = .{},
     updates: update_checker.Checker = .{},
     tasks: ?*Io.Group = null,
+    totp_last: std.AutoHashMapUnmanaged(u32, u64) = .empty,
+    totp_mutex: Io.Mutex = .init,
     notify_inflight: std.atomic.Value(u32) = .init(0),
     docker: ?docker.Client = null,
     systemd: ?systemd.Client = null,
@@ -67,6 +70,7 @@ pub const App = struct {
         app.sessions.deinit(app.gpa);
         app.limiter.deinit(app.gpa);
         app.user_limiter.deinit(app.gpa);
+        app.totp_last.deinit(app.gpa);
         if (app.audit_log) |*a| a.close(io);
     }
 
@@ -91,6 +95,15 @@ pub const App = struct {
             app.recordTarget(io, snap.ts_s, "system", action, target, true, "");
             app.sendWebhook(io, snap.hostname.slice(), ev);
         }
+    }
+
+    fn checkTotp(app: *App, io: Io, user_id: u32, secret_b32: []const u8, now_s: i64, input: []const u8) bool {
+        const secret = totp.decodeSecret(secret_b32) orelse return false;
+        app.totp_mutex.lockUncancelable(io);
+        defer app.totp_mutex.unlock(io);
+        const gop = app.totp_last.getOrPut(app.gpa, user_id) catch return false;
+        if (!gop.found_existing) gop.value_ptr.* = 0;
+        return totp.verify(secret, now_s, input, gop.value_ptr);
     }
 
     fn sendWebhook(app: *App, io: Io, host: []const u8, ev: alerts_mod.Event) void {
@@ -415,7 +428,7 @@ fn login(app: *App, io: Io, ctx: Ctx, body: []const u8, s: *Scratch) Reply {
 
     var fba_buf: [2048]u8 = undefined;
     var fba: std.heap.FixedBufferAllocator = .init(&fba_buf);
-    const Creds = struct { username: []const u8, password: []const u8 };
+    const Creds = struct { username: []const u8, password: []const u8, code: []const u8 = "" };
     const creds = std.json.parseFromSliceLeaky(Creds, fba.allocator(), body, .{ .ignore_unknown_fields = true }) catch {
         app.limiter.refund(io, ctx.client);
         return err_bad;
@@ -442,6 +455,17 @@ fn login(app: *App, io: Io, ctx: Ctx, body: []const u8, s: *Scratch) Reply {
         const who = if (users_mod.validName(creds.username)) creds.username else "-";
         app.record(io, ctx.now_s, who, "auth.login", false, ctx.ip_text);
         return .{ .status = .unauthorized, .body = "{\"error\":\"invalid credentials\"}" };
+    }
+
+    if (user.?.totp.len > 0) {
+        if (creds.code.len == 0) {
+            app.record(io, ctx.now_s, user.?.name, "auth.login.code_required", false, ctx.ip_text);
+            return .{ .status = .unauthorized, .body = "{\"error\":\"two-factor code required\",\"need_code\":true}" };
+        }
+        if (!app.checkTotp(io, user.?.id, user.?.totp, ctx.now_s, creds.code)) {
+            app.record(io, ctx.now_s, user.?.name, "auth.login", false, ctx.ip_text);
+            return .{ .status = .unauthorized, .body = "{\"error\":\"invalid credentials\"}" };
+        }
     }
 
     app.limiter.refund(io, ctx.client);
@@ -1285,6 +1309,38 @@ test "too many hashes at once are turned away and their attempts handed back" {
     app.hashing.store(0, .monotonic);
     try std.testing.expectEqual(http.Status.ok, dispatch(&app, io, ctxFrom(0), good_login, &s).status);
     try std.testing.expectEqual(@as(u32, 0), app.hashing.load(.monotonic));
+}
+
+test "two-factor: password alone is not enough, a code works once" {
+    const io = std.testing.io;
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var app = try testApp(arena.allocator());
+    defer app.deinit(io);
+    var s: Scratch = .{};
+    const secret: [totp.secret_len]u8 = "12345678901234567890".*;
+    const b32 = totp.encodeSecret(secret);
+    try app.users.setTotp(arena.allocator(), "alice", &b32);
+
+    const no_code = dispatch(&app, io, testCtx(.POST, "/api/v1/login"), good_login, &s);
+    try std.testing.expectEqual(http.Status.unauthorized, no_code.status);
+    try std.testing.expect(std.mem.find(u8, no_code.body, "need_code") != null);
+
+    var body_buf: [256]u8 = undefined;
+    const ctx = testCtx(.POST, "/api/v1/login");
+    const good_code = totp.code(secret, totp.counterAt(ctx.now_s));
+    const wrong_body = try std.fmt.bufPrint(&body_buf, "{{\"username\":\"alice\",\"password\":\"correct horse battery\",\"code\":\"{d:0>6}\"}}", .{(good_code + 1) % 1_000_000});
+    try std.testing.expectEqual(http.Status.unauthorized, dispatch(&app, io, ctxFrom(1), wrong_body, &s).status);
+
+    var body2: [256]u8 = undefined;
+    const right_body = try std.fmt.bufPrint(&body2, "{{\"username\":\"alice\",\"password\":\"correct horse battery\",\"code\":\"{d:0>6}\"}}", .{good_code});
+    try std.testing.expectEqual(http.Status.ok, dispatch(&app, io, ctxFrom(2), right_body, &s).status);
+    try std.testing.expectEqual(http.Status.unauthorized, dispatch(&app, io, ctxFrom(3), right_body, &s).status);
+
+    const bad_pw = try std.fmt.bufPrint(&body_buf, "{{\"username\":\"alice\",\"password\":\"nope nope nope\",\"code\":\"{d:0>6}\"}}", .{good_code});
+    const r = dispatch(&app, io, ctxFrom(4), bad_pw, &s);
+    try std.testing.expectEqual(http.Status.unauthorized, r.status);
+    try std.testing.expect(std.mem.find(u8, r.body, "need_code") == null);
 }
 
 test "login insists on application/json" {

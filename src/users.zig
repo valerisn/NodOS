@@ -1,12 +1,14 @@
 const std = @import("std");
 const Io = std.Io;
 const auth = @import("auth.zig");
+const totp = @import("totp.zig");
 
 pub const User = struct {
     id: u32,
     name: []const u8,
     role: auth.Role,
     phc: []const u8,
+    totp: []const u8 = "",
 };
 
 pub const Error = error{
@@ -52,6 +54,16 @@ pub const Users = struct {
         return error.NoSuchUser;
     }
 
+    pub fn setTotp(u: *Users, arena: std.mem.Allocator, name: []const u8, secret_b32: []const u8) ChangeError!void {
+        for (u.list.items) |*user| {
+            if (std.mem.eql(u8, user.name, name)) {
+                user.totp = if (secret_b32.len == 0) "" else try arena.dupe(u8, secret_b32);
+                return;
+            }
+        }
+        return error.NoSuchUser;
+    }
+
     pub fn adminCount(u: *const Users) usize {
         var n: usize = 0;
         for (u.list.items) |user| {
@@ -72,7 +84,9 @@ pub const Users = struct {
 
     pub fn write(u: *const Users, w: *Io.Writer) Io.Writer.Error!void {
         for (u.list.items) |user| {
-            try w.print("{d}:{s}:{s}:{s}\n", .{ user.id, user.name, @tagName(user.role), user.phc });
+            try w.print("{d}:{s}:{s}:{s}", .{ user.id, user.name, @tagName(user.role), user.phc });
+            if (user.totp.len > 0) try w.print(":{s}", .{user.totp});
+            try w.writeByte('\n');
         }
     }
 };
@@ -96,7 +110,10 @@ pub fn parse(arena: std.mem.Allocator, text: []const u8) Error!Users {
         const id_s = f.next() orelse return error.CorruptUserFile;
         const name = f.next() orelse return error.CorruptUserFile;
         const role_s = f.next() orelse return error.CorruptUserFile;
-        const phc = f.rest();
+        const phc = f.next() orelse return error.CorruptUserFile;
+        const secret = f.next() orelse "";
+        if (f.next() != null) return error.CorruptUserFile;
+        if (secret.len > 0 and totp.decodeSecret(secret) == null) return error.CorruptUserFile;
         const id = std.fmt.parseInt(u32, id_s, 10) catch return error.CorruptUserFile;
         const role = std.meta.stringToEnum(auth.Role, role_s) orelse return error.CorruptUserFile;
         if (!validName(name) or phc.len == 0 or users.find(name) != null) return error.CorruptUserFile;
@@ -105,6 +122,7 @@ pub fn parse(arena: std.mem.Allocator, text: []const u8) Error!Users {
             .name = try arena.dupe(u8, name),
             .role = role,
             .phc = try arena.dupe(u8, phc),
+            .totp = try arena.dupe(u8, secret),
         });
     }
     return users;
@@ -199,4 +217,23 @@ test "corrupt files are rejected" {
     try std.testing.expectError(error.CorruptUserFile, parse(a, "x:alice:admin:h"));
     try std.testing.expectError(error.CorruptUserFile, parse(a, "1:alice:root:h"));
     try std.testing.expectError(error.CorruptUserFile, parse(a, "1:alice:admin:h\n2:alice:viewer:h"));
+}
+
+test "two-factor secret survives a round trip and old files still load" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var u = try parse(a, "1:alice:admin:$argon2id$x\n");
+    try std.testing.expectEqualStrings("", u.find("alice").?.totp);
+    try u.setTotp(a, "alice", "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ");
+    var out: Io.Writer.Allocating = .init(a);
+    try u.write(&out.writer);
+    const again = try parse(a, out.written());
+    try std.testing.expectEqualStrings("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", again.find("alice").?.totp);
+    try std.testing.expectEqualStrings("$argon2id$x", again.find("alice").?.phc);
+    try u.setTotp(a, "alice", "");
+    try std.testing.expectEqualStrings("", u.find("alice").?.totp);
+    try std.testing.expectError(error.NoSuchUser, u.setTotp(a, "nobody", "x"));
+    try std.testing.expectError(error.CorruptUserFile, parse(a, "1:alice:admin:h:notbase32!\n"));
+    try std.testing.expectError(error.CorruptUserFile, parse(a, "1:alice:admin:h:GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ:extra\n"));
 }

@@ -54,7 +54,7 @@ These are real. None is hidden elsewhere.
 3. **The audit log is not tamper-evident.** It is a plain append-only file. An
    attacker with write access to `/var/lib/nodos` can edit it. Ship it
    elsewhere if you need integrity.
-4. **No second factor.** Passwords only.
+4. **Two-factor login is optional and per user.** Turn it on with `nodos user totp NAME`. The secret is stored in `users.db` in plain base32 (the file is mode 0600), there are no recovery codes (lose the device and an admin runs `nodos user totp-off NAME` on the host), and a code works once. Users without it sign in with a password alone.
 5. **Throttling is per address and per account.** An address (an IPv6 /64) gets
    5 attempts per 15 minutes and an account gets 20, so many addresses can guess
    slowly at best. The cost is that anyone can lock a known account for 15

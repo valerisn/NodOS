@@ -213,6 +213,19 @@ What is done to make it less risky:
 It is still not risk free. Read the changelog and run `sudo nodos update`
 yourself when it suits you; that is the safer habit.
 
+## Two-factor login
+
+```sh
+sudo -u nodos nodos user totp alice --config /etc/nodos/nodos.conf
+sudo systemctl restart nodos
+```
+
+The command prints a secret and an `otpauth://` link. Add the secret to any
+authenticator app (the app asks for a "setup key"; choose time based, 6 digits,
+30 seconds). From then on the dashboard asks for the 6 digit code after the
+password. A code can be used once. If the device is lost, run
+`nodos user totp-off alice` on the server.
+
 ## Backup and restore
 
 ```sh

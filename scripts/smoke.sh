@@ -52,6 +52,13 @@ sed "s#data_dir = .*#data_dir = $NATIVE_DIR/restored#" "$DIR/nodos.conf" > "$DIR
 printf 'not a backup' > "$DIR/junk.tar"
 "$BIN" restore "$DIR/junk.tar" --force --config "$DIR/restore.conf" >/dev/null 2>&1 && fail "restore accepted junk"
 
+TWOFA_SECRET=""
+if command -v python3 >/dev/null 2>&1; then
+    printf '%s\n' 'two factor passphrase' | "$BIN" user add twofa --config "$DIR/nodos.conf" >/dev/null
+    TWOFA_SECRET="$("$BIN" user totp twofa --config "$DIR/nodos.conf" | awk '/secret:/ {print $2}')"
+    [ -n "$TWOFA_SECRET" ] || fail "user totp printed no secret"
+fi
+
 "$BIN" serve --config "$DIR/nodos.conf" 2> "$DIR/server.log" &
 SERVER_PID=$!
 
@@ -70,6 +77,17 @@ kill -0 "$SERVER_PID" || fail "server died after bodiless POST"
 
 [ "$(status -H 'content-type: application/json' -d '{"username":"smoke","password":"wrong wrong wrong"}' "$URL/login")" = "401" ] || fail "bad login"
 [ "$(status -d '{"username":"smoke","password":"x"}' "$URL/login")" = "415" ] || fail "login must insist on application/json"
+
+if [ -n "$TWOFA_SECRET" ]; then
+    JSON='content-type: application/json'
+    PW='"username":"twofa","password":"two factor passphrase"'
+    R="$(curl -s -H "$JSON" -d "{$PW}" "$URL/login")"
+    echo "$R" | grep -q '"need_code":true' || fail "2fa user without a code should be asked for one: $R"
+    [ "$(status -H "$JSON" -d "{$PW,\"code\":\"000000\"}" "$URL/login")" = "401" ] || fail "2fa wrong code accepted"
+    CODE="$(python3 -c "import hmac,hashlib,base64,struct,time,sys; k=base64.b32decode(sys.argv[1]); c=struct.pack('>Q',int(time.time())//30); h=hmac.new(k,c,hashlib.sha1).digest(); o=h[-1]&15; print('%06d'%((struct.unpack('>I',h[o:o+4])[0]&0x7fffffff)%1000000))" "$TWOFA_SECRET")"
+    [ "$(status -H "$JSON" -d "{$PW,\"code\":\"$CODE\"}" "$URL/login")" = "200" ] || fail "2fa correct code rejected"
+    [ "$(status -H "$JSON" -d "{$PW,\"code\":\"$CODE\"}" "$URL/login")" = "401" ] || fail "2fa code was accepted twice"
+fi
 
 LOGIN="$(curl -s -i -H 'content-type: application/json' -d '{"username":"smoke","password":"smoke test passphrase"}' "$URL/login")"
 echo "$LOGIN" | head -1 | grep -q '200' || fail "good login"

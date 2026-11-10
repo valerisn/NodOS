@@ -25,7 +25,7 @@ No authentication. `{"status":"ok","version":"0.0.1-dev"}`.
 
 ### `POST /api/v1/login`
 
-Body: `{"username": "...", "password": "..."}`, at most 1024 bytes.
+Body: `{"username": "...", "password": "...", "code": "123456"}`, at most 1024 bytes. `code` is only for accounts with two-factor login. When the password is right but the code is missing, the answer is 401 `{"error":"two-factor code required","need_code":true}`; send the same request again with `code`.
 
 | Status | Meaning |
 | --- | --- |

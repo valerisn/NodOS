@@ -13,6 +13,8 @@ pub const Command = enum {
     user_passwd,
     user_remove,
     user_list,
+    user_totp,
+    user_totp_off,
 };
 
 pub const Parsed = struct {
@@ -48,6 +50,8 @@ const user_sub = [_]struct { name: []const u8, cmd: Command, takes_name: bool }{
     .{ .name = "passwd", .cmd = .user_passwd, .takes_name = true },
     .{ .name = "remove", .cmd = .user_remove, .takes_name = true },
     .{ .name = "list", .cmd = .user_list, .takes_name = false },
+    .{ .name = "totp", .cmd = .user_totp, .takes_name = true },
+    .{ .name = "totp-off", .cmd = .user_totp_off, .takes_name = true },
 };
 
 pub fn parse(args: []const []const u8) ParseError!Parsed {
@@ -194,6 +198,14 @@ test "backup and restore arguments" {
     try std.testing.expectError(error.MissingValue, parse(&.{"restore"}));
     try std.testing.expectError(error.UnexpectedArgument, parse(&.{ "restore", "a", "b" }));
     try std.testing.expectError(error.UnexpectedArgument, parse(&.{ "serve", "--out", "x" }));
+}
+
+test "totp commands take a user" {
+    const p = try parse(&.{ "user", "totp", "kea", "--config", "/c" });
+    try std.testing.expectEqual(Command.user_totp, p.command);
+    try std.testing.expectEqualStrings("kea", p.user_name.?);
+    try std.testing.expectEqual(Command.user_totp_off, (try parse(&.{ "user", "totp-off", "kea" })).command);
+    try std.testing.expectError(error.MissingValue, parse(&.{ "user", "totp" }));
 }
 
 test "serve takes a config path" {

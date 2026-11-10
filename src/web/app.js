@@ -243,9 +243,20 @@ $("login-form").addEventListener("submit", async (e) => {
   err.hidden = true;
   btn.disabled = true;
   try {
-    const me = await post("/login", { username: $("username").value.trim(), password: $("password").value });
+    const body = { username: $("username").value.trim(), password: $("password").value };
+    if (!$("code-row").hidden) body.code = $("code").value.trim();
+    const me = await post("/login", body);
+    $("code-row").hidden = true;
+    $("code").value = "";
     showApp(me);
   } catch (ex) {
+    if (ex.status === 401 && ex.message === "two-factor code required") {
+      $("code-row").hidden = false;
+      $("code").focus();
+      err.textContent = "Enter the 6 digit code from your authenticator app.";
+      err.hidden = false;
+      return;
+    }
     err.textContent = ex.status === 429 ? "Too many failed attempts. Wait 15 minutes and try again." : ex.status === 401 ? "Wrong username or password." : "Sign-in failed: " + ex.message;
     err.hidden = false;
   } finally {

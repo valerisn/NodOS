@@ -16,6 +16,10 @@ const usage =
     \\  user remove NAME [--config PATH]
     \\                               Delete a user (never the last admin)
     \\  user list [--config PATH]    Show users and roles
+    \\  user totp NAME [--config PATH]
+    \\                               Turn on two-factor login and print the secret
+    \\  user totp-off NAME [--config PATH]
+    \\                               Turn two-factor login off for a user
     \\  update [--check] [--rollback] [--auto on|off|status] [--yes] [--config PATH]
     \\                               Check for, install or undo a release
     \\  backup --out FILE [--force] [--config PATH]
@@ -69,7 +73,7 @@ pub fn main(init: std.process.Init) !void {
         },
         .backup => try backupCommand(init, cmd, w),
         .restore => try restoreCommand(init, cmd, w),
-        .user_add, .user_passwd, .user_remove, .user_list => try userCommand(init, cmd, w),
+        .user_add, .user_passwd, .user_remove, .user_list, .user_totp, .user_totp_off => try userCommand(init, cmd, w),
     }
     try w.flush();
 }
@@ -148,6 +152,21 @@ fn userCommand(init: std.process.Init, cmd: nodos.cli.Parsed, w: *Io.Writer) !vo
             const phc = readPasswordHash(init, &hash_buf);
             users.setHash(arena, cmd.user_name.?, phc) catch |err| fatal("cannot change password: {s}", .{@errorName(err)});
             try w.print("changed password for '{s}'\n", .{cmd.user_name.?});
+        },
+        .user_totp => {
+            if (users.find(cmd.user_name.?) == null) fatal("no such user '{s}'", .{cmd.user_name.?});
+            const secret = nodos.totp.generate(io);
+            const b32 = nodos.totp.encodeSecret(secret);
+            users.setTotp(arena, cmd.user_name.?, &b32) catch |err| fatal("cannot enable two-factor: {s}", .{@errorName(err)});
+            var uri_buf: [256]u8 = undefined;
+            try w.print("two-factor enabled for '{s}'.\nAdd this to your authenticator app (any TOTP app works):\n\n  secret: {s}\n  link:   {s}\n\nKeep the secret private. If you lose the device, run: nodos user totp-off {s}\n", .{ cmd.user_name.?, &b32, nodos.totp.uri(&uri_buf, cmd.user_name.?, &b32) orelse "", cmd.user_name.? });
+        },
+        .user_totp_off => {
+            users.setTotp(arena, cmd.user_name.?, "") catch |err| switch (err) {
+                error.NoSuchUser => fatal("no such user '{s}'", .{cmd.user_name.?}),
+                else => fatal("cannot disable two-factor: {s}", .{@errorName(err)}),
+            };
+            try w.print("two-factor disabled for '{s}'\n", .{cmd.user_name.?});
         },
         .user_remove => {
             users.remove(cmd.user_name.?) catch |err| switch (err) {

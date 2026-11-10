@@ -18,6 +18,10 @@
       <input id="username" name="username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" required>
       <label for="password">Password</label>
       <input id="password" name="password" type="password" autocomplete="current-password" required>
+      <div id="code-row" hidden>
+        <label for="code">Two-factor code</label>
+        <input id="code" name="code" type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" spellcheck="false">
+      </div>
       <p id="login-error" class="form-error" role="alert" hidden></p>
       <button type="submit" id="login-button">Sign in</button>
     </form>
