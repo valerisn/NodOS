@@ -21,6 +21,8 @@ Found in the pre-release review, all fixed before any release. Details in
 
 ### Added
 
+- Alert thresholds are configurable (`alert_*` keys) and an admin-only Settings page shows the running configuration (read-only; secrets show only as set or not set).
+
 - `scripts/setup-tls.sh`: one command to put Caddy in front of NodOS, with a test in CI.
 
 - Optional two-factor login (TOTP, RFC 6238): `nodos user totp NAME`, `nodos user totp-off NAME`. Codes work once.

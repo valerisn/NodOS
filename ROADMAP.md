@@ -38,7 +38,7 @@ implemented and tested.
 - [x] Layout, navigation, login (embedded in the binary, no build step)
 - [x] Overview page with live strip charts
 - [x] Storage and network pages
-- [ ] Settings page (not built: accounts are managed with the `nodos user` commands, see decisions)
+- [x] Settings page: read-only view of the running configuration for admins. Editing stays in the config file and the `nodos user` commands on purpose, so the web interface has no write path to the host
 
 ## Phase 5: Management (in progress)
 

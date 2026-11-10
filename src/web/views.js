@@ -551,4 +551,73 @@ export function auditView({ role }) {
   };
 }
 
-export const views = { overview: overviewView, storage: storageView, network: networkView, docker: dockerView, services: serviceView, audit: auditView };
+export function settingsView({ role }) {
+  const message = h("p", { class: "muted", role: "status" });
+  const box = h("div", { hidden: true });
+
+  function yesNo(v) {
+    return v ? "on" : "off";
+  }
+
+  function section(title, rows) {
+    return h(
+      "section",
+      { class: "block" },
+      h("h2", {}, title),
+      h("table", {}, h("tbody", {}, ...rows.map(([k, v]) => h("tr", {}, h("td", {}, k), h("td", { class: "mount-dev" }, String(v)))))),
+    );
+  }
+
+  async function load() {
+    if (role !== "admin") {
+      message.textContent = "Settings are visible to administrators only.";
+      return;
+    }
+    try {
+      const s = await get("/settings");
+      message.textContent = "These are read from the config file. To change one, edit the file and restart NodOS.";
+      const a = s.alerts;
+      box.replaceChildren(
+        section("Server", [
+          ["Version", s.version],
+          ["Listen", `${s.listen}:${s.port}`],
+          ["Data directory", s.data_dir],
+          ["Log level", s.log_level],
+          ["Secure cookies", yesNo(s.secure_cookies)],
+          ["Trusted proxy", s.trusted_proxy || "none"],
+          ["Sample interval", `${s.sample_interval_ms} ms`],
+        ]),
+        section("Integrations", [
+          ["Docker socket", s.docker_socket === "off" ? "off" : s.docker_socket],
+          ["Services", s.services.length ? s.services.join(", ") : "none"],
+          ["Alert webhook", s.webhook_set ? "configured" : "not set"],
+        ]),
+        section("Updates", [
+          ["Update check", yesNo(s.update_check)],
+          ["Custom mirror", s.update_mirror_set ? "configured" : "not set (GitHub)"],
+        ]),
+        section("Alert thresholds", [
+          ["CPU busy", `${a.cpu_warn}% for ${a.cpu_samples} samples`],
+          ["Memory used", `warn ${a.mem_warn}%, critical ${a.mem_crit}%`],
+          ["Disk used", `warn ${a.disk_warn}%, critical ${a.disk_crit}%`],
+          ["Temperature", `warn ${a.temp_warn} C, critical ${a.temp_crit} C`],
+          ["Swap used", `warn ${a.swap_warn}%`],
+        ]),
+      );
+      box.hidden = false;
+    } catch (err) {
+      message.textContent = err.status === 403 ? "Settings are visible to administrators only." : err.message;
+    }
+  }
+
+  return {
+    el: h("div", {}, message, box),
+    activate() {
+      load();
+    },
+    deactivate() {},
+    update() {},
+  };
+}
+
+export const views = { overview: overviewView, storage: storageView, network: networkView, docker: dockerView, services: serviceView, audit: auditView, settings: settingsView };

@@ -33,6 +33,7 @@ function showApp(me) {
   $("whoami").textContent = me.username;
   role = me.role;
   $("nav-audit").hidden = role !== "admin";
+  $("nav-settings").hidden = role !== "admin";
   setCsrf(me.csrf);
   route();
   startStream();
