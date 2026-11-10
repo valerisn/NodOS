@@ -3,7 +3,8 @@
 NodOS uses the Developer Certificate of Origin (DCO), version 1.1, instead of a
 contributor license agreement. You keep your copyright. Your contribution is
 licensed under the NodOS Free Use License (section 4 of it also gives the
-maintainers the right to relicense your contribution along with the project).
+Licensor the right to relicense and enforce your contribution along with the
+project).
 
 Sign off every commit with `git commit -s`, which adds a line like:
 

@@ -45,12 +45,15 @@ passes through proxies more reliably. WebSocket is only worth its complexity if
 we need browser-to-server streaming, which a future web terminal would. We do
 not plan a web terminal (see Security). Decision stands unless that changes.
 
-## D6. License: NodOS Free Use License (changed from MIT after v0.1.0)
+## D6. License: NodOS Free Use License 1.1 (changed from MIT after v0.1.0)
 
 The maintainer wants NodOS free for everyone to use, read, modify and share, and
 never sold or monetized. No standard open source license does that: the Open
 Source Definition forbids restricting commercial use. So NodOS now uses its own
-license, which is source-available rather than open source. Consequences:
+license, which is source-available rather than open source. Version 1.1 is
+strict on purpose: free for personal and non-profit use only, business use needs
+written permission, rights end the instant a term is broken, and profits made in
+breach are forfeit. Consequences:
 distros and some package indexes only carry OSI-approved licenses, some
 companies will not touch non-commercial code, and the text has had no lawyer's
 review. The v0.1.0 release stays under MIT for the people who received it. A

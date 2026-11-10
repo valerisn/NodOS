@@ -4,7 +4,7 @@ This page collects the legal side of NodOS in one place. It is not legal advice.
 
 | Document | What it covers |
 | --- | --- |
-| [LICENSE](../../LICENSE) | The NodOS Free Use License: free to use, modify and share, never to be sold or monetized |
+| [LICENSE](../../LICENSE) | The NodOS Free Use License: free for personal and non-profit use, never sold, never monetized, no business use without permission |
 | [NOTICE](../../NOTICE) | Copyright and what is compiled into the binary |
 | [Third-party notices](third-party.md) | Licenses of everything shipped inside a release |
 | [Disclaimer](disclaimer.md) | No warranty, your responsibility, root-level risks |

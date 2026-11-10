@@ -1,121 +1,163 @@
-NodOS Free Use License, version 1.0
+NodOS Free Use License, version 1.1
 
 Copyright (c) 2026 NodOS contributors
 
-NodOS is free to use, study, change and share. It may not be sold, and nobody
-may make money from it. The rest of this text spells that out.
+NodOS is free for people to use, study, change and share. It is never for sale,
+never part of anything that is for sale, and nobody makes money from it, in any
+way, directly or indirectly. Anything not clearly allowed below is not allowed.
 
 1. DEFINITIONS
 
 "NodOS" means the software in this repository, in source or compiled form,
-together with its documentation.
+together with its documentation, artwork, name and logo.
 
-"You" means anyone using NodOS under this license.
+"Licensor" means the NodOS copyright holders and maintainers.
 
-"Derivative" means any work that is based on, copied from, or includes a
-substantial part of NodOS, including modified versions, forks, ports and
-anything that bundles NodOS.
+"You" means anyone using, copying, modifying or sharing NodOS.
 
-"Commercial Use" means any use of NodOS or a Derivative that earns or is meant
-to earn money or any other payment, benefit or advantage from NodOS itself.
-Without limiting that, it includes:
+"Derivative" means any work that is based on, copied from, translated from, or
+includes any part of NodOS, including modified versions, forks, ports,
+rewrites that follow its code or structure, plugins, images, packages and
+anything that bundles or ships NodOS.
 
-  (a) selling, licensing or renting NodOS or a Derivative, or charging for a
-      copy, download, update, key, activation or access;
-  (b) offering NodOS or a Derivative as a paid or ad-supported service, hosted
-      product, subscription, "premium" tier or feature gate;
-  (c) charging for support, installation, setup, configuration, consulting,
-      training, customization or maintenance of NodOS or a Derivative;
-  (d) including NodOS or a Derivative in a product, device, image or service
-      that is sold or is otherwise a source of revenue;
-  (e) earning from advertising, sponsorship, affiliate links, paywalls or data
-      collection placed on or around NodOS or a Derivative, or on a website,
-      video or channel whose main purpose is to distribute or promote it;
-  (f) charging for access to a Derivative's source code, builds or releases.
+"Commercial Use" means any use of NodOS or a Derivative that earns, or is meant
+or able to earn, money or any other payment, benefit, advantage or value for
+anyone, directly or indirectly. It includes, without limit:
 
-2. WHAT YOU MAY DO
+  (a) selling, licensing, renting, leasing or reselling NodOS or a Derivative,
+      or charging for a copy, download, update, key, activation, build, mirror
+      or access, including "cost recovery" or "handling" charges;
+  (b) offering NodOS or a Derivative as, or inside, a paid or ad-supported
+      service, hosted product, managed service, subscription, "premium" tier,
+      trial that leads to payment, or feature gate;
+  (c) charging for support, installation, setup, configuration, integration,
+      consulting, training, customization, monitoring or maintenance of NodOS or
+      a Derivative, or using NodOS to deliver any paid service to a client;
+  (d) including NodOS or a Derivative in a product, device, appliance, image,
+      distribution, template or service that is sold or otherwise earns
+      revenue, even if NodOS is not the part being charged for;
+  (e) earning from advertising, sponsorship, affiliate links, paywalls, tips
+      or donations that unlock anything, memberships, or data collection placed
+      on or around NodOS or a Derivative, or on a site, repository, video,
+      channel or account whose purpose is to distribute or promote it;
+  (f) charging for access to a Derivative's source code, builds or releases;
+  (g) using NodOS, its code or its documentation to build, train, fine-tune or
+      market a product or service that is sold or earns revenue;
+  (h) any use by or for a business, company, sole trader or other for-profit
+      organization, or by anyone in the course of their paid work, other than
+      under written permission from the Licensor.
 
-Subject to the rest of this license, you may, free of charge:
+2. WHO MAY USE IT, AND HOW
 
-  (a) use NodOS for any purpose that is not Commercial Use, including at home,
-      at school, at work, and to manage the servers of a company or other
-      organization you belong to. Running NodOS on your own infrastructure is
-      not Commercial Use, even if that infrastructure supports a business,
-      provided nobody pays for NodOS itself or for access to it;
+Subject to this whole license, you may, free of charge, and only if your use is
+not Commercial Use:
+
+  (a) use NodOS on your own equipment for personal, household, hobby, learning,
+      research or volunteer purposes, and likewise in a school, university,
+      charity or other non-profit organization, or a public body, that does not
+      charge for what NodOS is used for;
   (b) download, read, copy and study the source code;
-  (c) modify the source code and build your own versions;
-  (d) share NodOS and your Derivatives with anyone, in source or compiled form,
-      as long as you do so for free and follow section 3.
+  (c) modify the source code and build your own versions for use under (a);
+  (d) share NodOS and your Derivatives with anyone, in source and compiled
+      form, as long as it is free and you follow section 3.
+
+The Licensor may give written permission for a use that this license does not
+allow. Permission has to be in writing, names who and what it covers, and does
+not change this license for anyone else.
 
 3. CONDITIONS
 
-  (a) Free only. You may not charge for NodOS or any Derivative, and you may
-      not make Commercial Use of either.
-  (b) Keep this license. Every copy or Derivative you share must include this
-      license text and the copyright notice, and must be shared under this same
-      license. You may not add terms that restrict what this license allows or
-      that allow what it forbids.
-  (c) Say what you changed. A modified version must carry a clear notice that
-      it was modified, by whom, and that it is not the official NodOS.
-  (d) Source stays available. If you share a compiled Derivative, you must also
-      make its complete source available, free of charge.
-  (e) No passing off. You may not use the NodOS name or logo in a way that
-      suggests your Derivative is the official release or is endorsed by the
-      project. See docs/legal/trademarks.md.
-  (f) No circumvention. You may not remove or disable the update signature
-      check in order to distribute builds that pretend to be official ones.
+  (a) Free only. You may not charge for NodOS or any Derivative, or make
+      Commercial Use of either, and you may not help, enable or knowingly
+      supply someone who does.
+  (b) Same license. Every copy and Derivative you share must include this
+      license text and the copyright notice and must be under this same license.
+      You may not add, remove or change terms, relicense, or sublicense under
+      different terms.
+  (c) Source stays public. A Derivative you share, in any form, must come with
+      its complete source, published openly and free of charge.
+  (d) Notices stay. You may not remove, hide or alter copyright notices,
+      license text, attribution or the NOTICE file. A Derivative must credit
+      NodOS and its authors in its README and in its about or version output.
+  (e) Modified means labeled. A modified version must say clearly, in its name
+      and in its documentation, that it is modified, by whom, and that it is not
+      the official NodOS.
+  (f) No passing off. You may not use the NodOS name, logo or release signing
+      key, or anything confusingly similar, so as to suggest that your
+      Derivative is official or endorsed. See docs/legal/trademarks.md.
+  (g) No circumvention. You may not remove, weaken or bypass the update
+      signature check, run a look-alike update channel, or distribute builds
+      that pretend to be official ones.
+  (h) No misuse. You may not use NodOS to attack, break into or disrupt systems
+      you do not own or have permission to manage.
 
 4. CONTRIBUTIONS
 
-If you submit a contribution to the project, you keep your copyright, and you
-license the contribution under this license. You also grant the NodOS
-maintainers a worldwide, perpetual, irrevocable, royalty-free right to use,
-modify and distribute your contribution under this license or any later
-license they choose for the project. You confirm that you have the right to
-make the contribution. See docs/legal/contributing-terms.md.
+If you submit a contribution to the project, you keep your copyright and you
+license the contribution under this license. You also grant the Licensor a
+worldwide, perpetual, irrevocable, royalty-free, transferable right to use,
+modify, distribute, relicense and enforce your contribution, under this license
+or any other license or terms the Licensor chooses for the project. You confirm
+that you wrote it or have the right to submit it. See
+docs/legal/contributing-terms.md.
 
-5. THE PROJECT'S OWN RIGHTS
+5. THE LICENSOR'S RIGHTS
 
-The copyright holders keep all rights not granted here. This license binds
-you; it does not restrict the copyright holders, who may release NodOS under
-other terms as well, to you or to anyone else.
+The Licensor keeps all rights not granted here, and no right is granted by
+implication, estoppel, course of dealing or the absence of enforcement. This
+license binds you. It does not bind the Licensor, who may release NodOS under
+other terms as well, to anyone, for any price.
 
 6. EARLIER VERSIONS
 
-Copies of NodOS released before this license took effect (tags v0.1.0 and
-earlier) were published under the MIT License. Anyone who received those copies
-keeps the MIT rights to those copies. This license applies to every version
-released or committed after the change.
+Copies of NodOS released before this license took effect (tag v0.1.0 and
+earlier) were published under the MIT License. People who received those copies
+keep the MIT rights to those exact copies. Everything released or committed
+after that change, including all new code, is under this license only, and
+nothing here lets anyone relicense newer code under MIT by pointing at an older
+copy.
 
 7. THIRD-PARTY CODE
 
 NodOS contains parts of the Zig standard library, which is licensed under the
-MIT License. Those parts stay under that license and its notice, reproduced in
-docs/legal/third-party.md, applies to them. This license does not change it.
+MIT License. Those parts stay under that license, and the notice in
+docs/legal/third-party.md applies to them. This license does not change it and
+does not apply to them.
 
 8. TERMINATION
 
-If you break a condition of this license, your rights under it end
-automatically. They come back if you stop the violation and fix it within 30
-days of becoming aware of it, the first time it happens. A second violation ends
-your rights for good unless the copyright holders say otherwise in writing.
-People who received NodOS from you keep their own rights as long as they
-follow this license themselves.
+Your rights under this license end immediately and automatically, without
+notice, the moment you break any term of it. They do not come back unless the
+Licensor restores them in writing. If you sue anyone claiming that NodOS
+infringes a patent, your rights end at once. Anyone who received NodOS from you
+keeps their own rights only as long as they follow this license themselves.
+When your rights end you must stop using, sharing and hosting NodOS and every
+Derivative, and delete the copies you hold.
 
-9. ENFORCEMENT
+9. ENFORCEMENT AND REMEDIES
 
-Anyone who sells NodOS or a Derivative, or otherwise tries to make money from
-it, is not covered by this license and is infringing the copyright. The
-copyright holders will happily file takedown notices (for example under the US
-DMCA, or the equivalent law elsewhere) with hosting providers, app stores,
-marketplaces, payment processors, search engines and code hosting platforms,
-and may take other legal action, against any such use, whoever does it.
+Anyone who sells NodOS or a Derivative, or tries to make money from it in any
+way, is not covered by this license and is infringing the copyright. The
+Licensor will happily file takedown notices (for example under the US DMCA, or
+the equivalent law elsewhere) with hosting providers, app stores, marketplaces,
+payment processors, advertising networks, search engines and code hosting
+platforms, and may take other legal action, against any such use, whoever does
+it, without warning.
+
+If you make Commercial Use of NodOS or a Derivative, you agree that:
+
+  (a) you hold everything you earned from it on behalf of the Licensor and must
+      pay it over on demand, in addition to any other remedy;
+  (b) the Licensor may get an injunction without having to prove actual harm,
+      because money cannot undo the damage to a free project;
+  (c) you will pay the Licensor's reasonable legal costs of enforcing this
+      license against you.
 
 10. NO WARRANTY
 
 NODOS IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
 INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE AND NONINFRINGEMENT.
+PARTICULAR PURPOSE AND NONINFRINGEMENT. YOU USE IT AT YOUR OWN RISK.
 
 11. LIMITATION OF LIABILITY
 
@@ -126,6 +168,8 @@ OTHER DEALINGS IN IT.
 
 12. GENERAL
 
-If a part of this license cannot be enforced, the rest still applies. Nothing
-here lets you do something the law forbids. Questions about whether a use is
-allowed can be sent to the maintainers; when in doubt, ask first.
+If a part of this license cannot be enforced, the rest still applies, and the
+unenforceable part is replaced by the closest enforceable one. A waiver is only
+valid in writing. Nothing here lets you do something the law forbids. If you
+are unsure whether a use is allowed, it is not; ask the Licensor in writing
+first.

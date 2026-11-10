@@ -1,7 +1,7 @@
 # Trademarks
 
 The NodOS name and logo identify this project. The code is under the NodOS Free Use License and you
-may fork and share it for free, but you may not present a modified version as the
+may fork and share it for free under its terms, but you may not present a modified version as the
 official NodOS.
 
 You may:

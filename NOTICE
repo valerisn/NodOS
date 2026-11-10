@@ -1,8 +1,9 @@
 NodOS
 Copyright (c) 2026 NodOS contributors
 
-Licensed under the NodOS Free Use License, version 1.0, see LICENSE. Free to use
-and modify; not to be sold or used to make money. Takedowns will be filed against anyone who does.
+Licensed under the NodOS Free Use License, version 1.1, see LICENSE. Free for
+personal and non-profit use; no business use, no selling, no monetizing in any
+way. Takedowns will be filed against anyone who does.
 
 Release binaries are statically linked against the Zig standard library
 (Copyright (c) Zig contributors, MIT License). NodOS has no other code

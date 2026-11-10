@@ -7,7 +7,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- License changed from MIT to the NodOS Free Use License: free to use, modify and share, not to be sold or monetized. Source-available, not OSI open source. v0.1.0 remains under MIT for those who received it.
+- License changed from MIT to the NodOS Free Use License 1.1: free for personal, hobby, school and non-profit use; no selling, no monetizing in any way, no business use without written permission; rights end immediately on any breach. Source-available, not OSI open source. v0.1.0 remains under MIT for those who received it.
 
 ## [0.1.0] - 2026-11-10
 

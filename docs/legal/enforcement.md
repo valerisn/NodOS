@@ -21,9 +21,19 @@ repository, and include:
 
 ## What is fine
 
-Forks, patches and your own builds shared for free are welcome, as long as they
-follow the [license](../../LICENSE). Using NodOS to manage your own or your
-employer's servers is fine. Voluntary tips with nothing offered in return are
-not something we chase, but nothing may be gated behind them.
+Using NodOS at home, for a hobby, for learning or research, or in a school,
+charity or other non-profit is fine. Forks, patches and your own builds shared
+for free are welcome, as long as they follow the [license](../../LICENSE), keep
+their source public and are labeled as modified.
+
+## What is not
+
+Selling it, bundling it in anything that earns money, paid hosting or support,
+ads or paywalls around it, using it for paid client work, and use by a business
+or in paid work without written permission. If you are unsure, it is not
+allowed: ask first.
+
+Anyone found doing this loses their license immediately, owes us what they
+earned from it, and gets a takedown.
 
 This page states intent and is not legal advice.
