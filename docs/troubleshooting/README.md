@@ -74,7 +74,7 @@ install, or the address is wrong (check `update_mirror`).
 
 An update installed but the service did not start: it was rolled back
 automatically and the version is on a skip list in
-`/var/lib/nodos/update-state`. See `journalctl -u nodos -e` for why, and remove
+`/var/lib/nodos-update/update-state`. See `journalctl -u nodos -e` for why, and remove
 the line to try again, or use `sudo nodos update --force`.
 
 The dashboard never shows an update notice: the check runs 30 seconds after
