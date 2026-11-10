@@ -14,6 +14,7 @@ pub const ratelimit = @import("ratelimit.zig");
 pub const audit = @import("audit.zig");
 pub const backup = @import("backup.zig");
 pub const notify = @import("notify.zig");
+pub const totp = @import("totp.zig");
 pub const update = struct {
     pub const version = @import("update/version.zig");
     pub const verify = @import("update/verify.zig");
